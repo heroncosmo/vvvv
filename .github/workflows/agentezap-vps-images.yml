@@ -54,6 +54,14 @@ jobs:
           context: .
           file: ./Dockerfile
           push: true
+          build-args: |
+            SUPABASE_URL=${{ secrets.VITE_SUPABASE_URL }}
+            SUPABASE_ANON_KEY=${{ secrets.VITE_SUPABASE_ANON_KEY }}
+            VITE_SUPABASE_URL=${{ secrets.VITE_SUPABASE_URL }}
+            VITE_SUPABASE_ANON_KEY=${{ secrets.VITE_SUPABASE_ANON_KEY }}
+            PUBLIC_BASE_URL=https://agentezap-staging.187-127-18-177.sslip.io
+            APP_URL=https://agentezap-staging.187-127-18-177.sslip.io
+            VITE_PUBLIC_APP_URL=https://agentezap-staging.187-127-18-177.sslip.io
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/agentezap-app:${{ inputs.image_tag }}
           cache-from: type=gha,scope=agentezap-app
