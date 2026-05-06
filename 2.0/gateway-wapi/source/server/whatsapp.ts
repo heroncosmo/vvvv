@@ -1976,6 +1976,21 @@ if (DISABLE_MESSAGE_PROCESSING) {
   console.log(`?? [DEV MODE] ?????????????????????????????????????????????????????\n`);
 }
 
+function allowExplicitConnectWhileSkipRestore(): boolean {
+  const value = String(process.env.WA_GATEWAY_ALLOW_EXPLICIT_CONNECT_WITH_SKIP_RESTORE || "").trim().toLowerCase();
+  return value === "1" || value === "true" || value === "yes" || value === "on";
+}
+
+function shouldBlockExplicitConnectForSkipRestore(source?: string): boolean {
+  if (process.env.SKIP_WHATSAPP_RESTORE !== "true") {
+    return false;
+  }
+
+  // Staging needs a safe way to generate a new QR without restoring every
+  // production session. Only direct connect/pairing requests omit source.
+  return !allowExplicitConnectWhileSkipRestore() || Boolean(source);
+}
+
 // ?? SISTEMA DE ACUMULA??O DE MENSAGENS
 // Rastreia timeouts pendentes e mensagens acumuladas por conversa
 interface PendingResponse {
@@ -6089,11 +6104,15 @@ export async function connectWhatsApp(
   options?: ConnectWhatsAppOptions,
 ): Promise<void> {
   // ??? MODO DESENVOLVIMENTO: Bloquear conexï¿½es para evitar conflito com produï¿½ï¿½o
-  if (process.env.SKIP_WHATSAPP_RESTORE === 'true') {
+  if (shouldBlockExplicitConnectForSkipRestore(options?.source)) {
     console.log(`\n??? [DEV MODE] Conexï¿½o WhatsApp bloqueada para user ${userId}`);
     console.log(`   ?? SKIP_WHATSAPP_RESTORE=true - Modo desenvolvimento ativo`);
     console.log(`   ? Sessï¿½es do WhatsApp em produï¿½ï¿½o nï¿½o serï¿½o afetadas\n`);
     throw new Error('WhatsApp desabilitado em modo desenvolvimento (SKIP_WHATSAPP_RESTORE=true). Isso protege suas sessï¿½es em produï¿½ï¿½o.');
+  } else if (process.env.SKIP_WHATSAPP_RESTORE === "true") {
+    console.log(
+      `[WA GATEWAY] Explicit connect allowed while SKIP_WHATSAPP_RESTORE=true user=${userId.substring(0, 8)} conn=${(targetConnectionId || userId).substring(0, 8)}`,
+    );
   }
 
   const ownership = await shouldSkipConnectionForCurrentRuntime(userId, targetConnectionId);
@@ -17381,11 +17400,15 @@ function setupPairingConnectionHandler(
 
 export async function requestClientPairingCode(userId: string, phoneNumber: string, targetConnectionId?: string): Promise<string | null> {
   // ??? MODO DESENVOLVIMENTO: Bloquear pairing para evitar conflito com produï¿½ï¿½o
-  if (process.env.SKIP_WHATSAPP_RESTORE === 'true') {
+  if (shouldBlockExplicitConnectForSkipRestore()) {
     console.log(`\n??? [DEV MODE] requestClientPairingCode bloqueado para user ${userId}`);
     console.log(`   ?? SKIP_WHATSAPP_RESTORE=true - Modo desenvolvimento ativo`);
     console.log(`   ? Sessï¿½es do WhatsApp em produï¿½ï¿½o nï¿½o serï¿½o afetadas\n`);
     throw new Error('WhatsApp desabilitado em modo desenvolvimento (SKIP_WHATSAPP_RESTORE=true). Isso protege suas sessï¿½es em produï¿½ï¿½o.');
+  } else if (process.env.SKIP_WHATSAPP_RESTORE === "true") {
+    console.log(
+      `[WA GATEWAY] Explicit pairing allowed while SKIP_WHATSAPP_RESTORE=true user=${userId.substring(0, 8)} conn=${(targetConnectionId || userId).substring(0, 8)}`,
+    );
   }
 
   // Verificar cooldown de rate limit
