@@ -126,6 +126,10 @@ export function stopNotificationScheduler(): void {
   }
 }
 
+export async function runNotificationSchedulerCycle(): Promise<void> {
+  await processNotifications();
+}
+
 // Controle de auto-reorganize (rodar a cada 2 horas, não a cada 5 min)
 let lastAutoReorganize: number = 0;
 const AUTO_REORGANIZE_INTERVAL_MS = 2 * 60 * 60 * 1000; // 2 horas

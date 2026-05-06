@@ -17,6 +17,8 @@ import { userFollowUpService } from "./userFollowUpService";
 
 import { registerFollowUpRoutes } from "./routes_user_followup";
 import { registerAdminFollowUpRoutes } from "./routes_admin_followup";
+import { registerStatefulJobRoutes } from "./routes_stateful_jobs";
+import { registerStatefulJobDispatchRoutes } from "./routes_stateful_job_dispatch";
 import { registerNotapayersRoutes } from "./routes_notapayers";
 import { registerAIRoutes } from "./routes_ai";
 import { registerPublicHelpRoutes, generateHelpSitemap } from "./routes_public_help";
@@ -985,6 +987,8 @@ Sitemap: https://agentezap.online/sitemap.xml
 
   registerFollowUpRoutes(app);
   registerAdminFollowUpRoutes(app);
+  registerStatefulJobRoutes(app);
+  registerStatefulJobDispatchRoutes(app);
   registerNotapayersRoutes(app);
   registerAIRoutes(app);
 
