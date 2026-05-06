@@ -189,7 +189,7 @@ export const UserTicketList: React.FC = () => {
       {sorted.length === 0 ? (
         <div className="text-center py-16">
           <div className="w-16 h-16 rounded-full bg-muted flex items-center justify-center mx-auto mb-4">
-            <Ticket className="w-8 h-8 text-muted-foreground" />
+            <TicketIcon className="w-8 h-8 text-muted-foreground" />
           </div>
           <p className="text-lg font-medium text-foreground mb-1">
             {search ? 'Nenhum resultado encontrado' : 'Nenhum chamado ainda'}

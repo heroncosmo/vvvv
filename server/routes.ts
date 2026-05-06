@@ -547,6 +547,39 @@ import { z } from "zod";
 
 
 
+function normalizePortugueseSeedText(value: unknown): unknown {
+  if (typeof value !== "string") return value;
+  return value
+    .replace(/\u00c3\u0192\u00c2\u00a1/g, "á")
+    .replace(/\u00c3\u0192\u00c2\u00a9/g, "é")
+    .replace(/\u00c3\u0192\u00c2\u00ad/g, "í")
+    .replace(/\u00c3\u0192\u00c2\u00b3/g, "ó")
+    .replace(/\u00c3\u0192\u00c2\u00ba/g, "ú")
+    .replace(/\u00c3\u0192\u00c2\u00a3/g, "ã")
+    .replace(/\u00c3\u0192\u00c2\u00b5/g, "õ")
+    .replace(/\u00c3\u0192\u00c2\u00a7/g, "ç")
+    .replace(/\u00c3\u00a1/g, "á")
+    .replace(/\u00c3\u00a9/g, "é")
+    .replace(/\u00c3\u00ad/g, "í")
+    .replace(/\u00c3\u00b3/g, "ó")
+    .replace(/\u00c3\u00ba/g, "ú")
+    .replace(/\u00c3\u00a3/g, "ã")
+    .replace(/\u00c3\u00b5/g, "õ")
+    .replace(/\u00c3\u00a7/g, "ç");
+}
+
+function normalizeSeedRecord<T extends Record<string, any>>(record: T): T {
+  return {
+    ...record,
+    name: normalizePortugueseSeedText(record.name),
+    label: normalizePortugueseSeedText(record.label),
+    description: normalizePortugueseSeedText(record.description),
+    ai_extraction_prompt: normalizePortugueseSeedText(record.ai_extraction_prompt),
+  } as T;
+}
+
+
+
 // Helper to get userId from authenticated request
 
 function getUserId(req: any): string {
@@ -5686,13 +5719,13 @@ Responda apenas com o nÃºmero do Ã­ndice (0 a ${optionsList.length - 1}) ou 
 
         if (createError) throw createError;
 
-        return res.json(created);
+        return res.json((created || []).map(normalizeSeedRecord));
 
       }
 
 
 
-      res.json(definitions);
+      res.json((definitions || []).map(normalizeSeedRecord));
 
     } catch (error) {
 
@@ -39993,7 +40026,7 @@ LEMBRE-SE: VocÃª Ã© o Rodrigo, atendente humano. Seja natural e prestativo!`
 
           .from('kanban_stages')
 
-          .insert(defaultStages)
+          .insert(defaultStages.map(normalizeSeedRecord))
 
           .select();
 
@@ -40001,13 +40034,13 @@ LEMBRE-SE: VocÃª Ã© o Rodrigo, atendente humano. Seja natural e prestativo!`
 
         if (insertError) throw insertError;
 
-        return res.json(newStages);
+        return res.json((newStages || []).map(normalizeSeedRecord));
 
       }
 
 
 
-      res.json(stages);
+      res.json((stages || []).map(normalizeSeedRecord));
 
     } catch (error: any) {
 
