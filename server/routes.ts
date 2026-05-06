@@ -1,6 +1,7 @@
 import type { Express, Request, Response, NextFunction } from "express";
 
 import { createServer, type Server } from "http";
+import { randomUUID } from "crypto";
 
 import { WebSocketServer, WebSocket } from "ws";
 
@@ -3465,6 +3466,31 @@ Responda apenas com o nÃºmero do Ã­ndice (0 a ${optionsList.length - 1}) ou 
     }
   });
 
+
+  app.get("/api/user/document", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = getUserId(req);
+      const { data, error } = await supabase
+        .from("users")
+        .select("document_type, document_number")
+        .eq("id", userId)
+        .single();
+
+      if (error && error.code === "PGRST116") {
+        return res.json({ document_type: null, document_number: null });
+      }
+      if (error) throw error;
+
+      res.json({
+        document_type: data?.document_type || null,
+        document_number: data?.document_number || null,
+      });
+    } catch (error) {
+      console.error("Error fetching user document:", error);
+      res.status(500).json({ message: "Failed to fetch user document" });
+    }
+  });
+
   // POST /api/analytics/segment-access — track when a user accesses a tool from a segment
   app.post("/api/analytics/segment-access", isAuthenticated, async (req: any, res) => {
     try {
@@ -6630,7 +6656,17 @@ Se nÃ£o encontrar um valor, retorne value como null. A confidence deve ser ent
 
   // GET - Obter produto especÃ­fico
 
-  app.get("/api/products/:id", isAuthenticated, async (req: any, res) => {
+  app.get("/api/products/:id", isAuthenticated, async (req: any, res, next: NextFunction) => {
+
+    const requestedProductId = String(req.params.id || "");
+
+    if (requestedProductId === "categories" || requestedProductId === "for-ai") {
+
+      return next();
+
+    }
+
+
 
     try {
 
@@ -7616,6 +7652,8 @@ Se nÃ£o encontrar um valor, retorne value como null. A confidence deve ser ent
 
           .insert({
 
+            id: randomUUID(),
+
             user_id: userId,
 
             is_active: false, // DESATIVADO por padrÃ£o - ativar via toggle
@@ -7734,7 +7772,7 @@ Se nÃ£o encontrar um valor, retorne value como null. A confidence deve ser ent
 
           .from('products_config')
 
-          .insert({ user_id: userId, ...updateData })
+          .insert({ id: randomUUID(), user_id: userId, ...updateData })
 
           .select()
 

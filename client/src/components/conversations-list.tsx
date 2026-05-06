@@ -64,6 +64,25 @@ interface ConversationsListProps {
   onSelectConversation: (id: string) => void;
 }
 
+function normalizeConversationPreviewText(text?: string | null): string {
+  const value = String(text || "");
+  if (!value) return "";
+
+  const normalized = value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+
+  if (
+    normalized.includes("[audio enviado]") ||
+    /\[(?:\u00ef\u00bf\u00bd|\ufffd)?udio enviado\]/i.test(value)
+  ) {
+    return "[Audio enviado]";
+  }
+
+  return value;
+}
+
 export function ConversationsList({
   connectionId,
   selectedConversationId,
@@ -712,9 +731,11 @@ export function ConversationsList({
       "?";
 
     // Snippet: em modo busca, preferir o snippet de mensagem; fora de busca, usar lastMessageText
-    const snippetText = isSearch && conversation.snippet
-      ? conversation.snippet
-      : conversation.lastMessageText;
+    const snippetText = normalizeConversationPreviewText(
+      isSearch && conversation.snippet
+        ? conversation.snippet
+        : conversation.lastMessageText
+    );
 
     // Badge de pendência — só mostrar fora de busca (na lista normal já há o chip de filtro)
     const showPendingBadge = !conversation.hasReplied && !conversation.isArchived;

@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { useAuth } from "@/hooks/useAuth";
 import { useToast } from "@/hooks/use-toast";
+import { apiRequest } from "@/lib/queryClient";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -182,9 +183,12 @@ export default function ToolsMenuPage() {
   const { data: btData } = useQuery<{ businessType: string | null }>({
     queryKey: ["/api/user/business-type"],
     queryFn: async () => {
-      const res = await fetch("/api/user/business-type");
-      if (!res.ok) return { businessType: null };
-      return res.json();
+      try {
+        const res = await apiRequest("GET", "/api/user/business-type");
+        return res.json();
+      } catch {
+        return { businessType: null };
+      }
     },
   });
 
@@ -200,12 +204,7 @@ export default function ToolsMenuPage() {
   // Mutation to save business type
   const saveBTMutation = useMutation({
     mutationFn: async (slug: string) => {
-      const res = await fetch("/api/user/business-type", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ businessType: slug }),
-      });
-      if (!res.ok) throw new Error("Falha ao salvar");
+      const res = await apiRequest("PUT", "/api/user/business-type", { businessType: slug });
       return res.json();
     },
     onSuccess: () => {
