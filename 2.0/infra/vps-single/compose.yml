@@ -1,0 +1,167 @@
+name: agentezap-single-vps
+
+services:
+  proxy:
+    image: caddy:2.8-alpine
+    container_name: agentezap-proxy
+    restart: unless-stopped
+    env_file:
+      - ./.env.runtime
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      api:
+        condition: service_healthy
+      web:
+        condition: service_healthy
+    networks:
+      - agentezap-public
+      - agentezap-internal
+    healthcheck:
+      test: ["CMD", "caddy", "version"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  web:
+    image: ${AGENTEZAP_WEB_IMAGE:?set AGENTEZAP_WEB_IMAGE}
+    container_name: agentezap-web
+    restart: unless-stopped
+    env_file:
+      - ${AGENTEZAP_WEB_ENV_FILE:-./env/web.env}
+    environment:
+      NODE_ENV: production
+      PORT: "5000"
+      APP_RUNTIME_PROFILE: web
+      DISABLE_BACKGROUND_SERVICES: "true"
+      DISABLE_BACKGROUND_JOBS: "true"
+      DISABLE_WHATSAPP_PROCESSING: "true"
+    expose:
+      - "5000"
+    networks:
+      - agentezap-internal
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:5000/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 8s
+      retries: 8
+      start_period: 45s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.50"
+          memory: 1536M
+
+  api:
+    image: ${AGENTEZAP_API_IMAGE:?set AGENTEZAP_API_IMAGE}
+    container_name: agentezap-api
+    restart: unless-stopped
+    env_file:
+      - ${AGENTEZAP_API_ENV_FILE:-./env/api.env}
+    environment:
+      NODE_ENV: production
+      PORT: "5000"
+      APP_RUNTIME_PROFILE: web
+      DISABLE_BACKGROUND_SERVICES: "true"
+      DISABLE_BACKGROUND_JOBS: "true"
+      DISABLE_WHATSAPP_PROCESSING: "true"
+      WA_GATEWAY_URL: http://gateway:5001
+      STATEFUL_JOBS_BASE_URL: http://worker:5000
+    expose:
+      - "5000"
+    networks:
+      - agentezap-internal
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:5000/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 8s
+      retries: 8
+      start_period: 45s
+    deploy:
+      resources:
+        limits:
+          cpus: "2.00"
+          memory: 2048M
+
+  worker:
+    image: ${AGENTEZAP_WORKER_IMAGE:?set AGENTEZAP_WORKER_IMAGE}
+    container_name: agentezap-worker
+    restart: unless-stopped
+    env_file:
+      - ${AGENTEZAP_WORKER_ENV_FILE:-./env/worker.env}
+    environment:
+      NODE_ENV: production
+      PORT: "5000"
+      APP_ROLE: worker
+      APP_RUNTIME_PROFILE: worker
+      DISABLE_LOCAL_WHATSAPP_RUNTIME: "true"
+      DISABLE_LEGACY_WHATSAPP_RUNTIME: "true"
+      ENABLE_STATEFUL_INTERVAL_JOBS: "false"
+      WA_GATEWAY_URL: http://gateway:5001
+    expose:
+      - "5000"
+    networks:
+      - agentezap-internal
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:5000/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 8s
+      retries: 8
+      start_period: 60s
+    stop_grace_period: 90s
+    deploy:
+      resources:
+        limits:
+          cpus: "3.00"
+          memory: 4096M
+
+  gateway:
+    image: ${AGENTEZAP_GATEWAY_IMAGE:?set AGENTEZAP_GATEWAY_IMAGE}
+    container_name: agentezap-gateway
+    restart: unless-stopped
+    env_file:
+      - ${AGENTEZAP_GATEWAY_ENV_FILE:-./env/gateway.env}
+    environment:
+      NODE_ENV: production
+      PORT: "5001"
+      SERVICE_MODE: wa-gateway
+      SESSIONS_DIR: /data/whatsapp-sessions
+      WA_GATEWAY_URL: http://gateway:5001
+      WA_GATEWAY_EVENT_URL: http://api:5000/api/internal/wa-gateway/events
+    expose:
+      - "5001"
+    volumes:
+      - /data/agentezap/sessions:/data/whatsapp-sessions
+      - /data/agentezap/runtime/uploads:/app/uploads
+      - /data/agentezap/runtime/attached_assets:/app/attached_assets
+      - /data/agentezap/runtime/temp_audio:/app/temp_audio
+      - /data/agentezap/runtime/logs:/app/logs
+    networks:
+      - agentezap-internal
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:5001/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 10s
+      retries: 8
+      start_period: 60s
+    stop_grace_period: 120s
+    deploy:
+      resources:
+        limits:
+          cpus: "3.00"
+          memory: 4096M
+
+networks:
+  agentezap-public:
+    driver: bridge
+  agentezap-internal:
+    driver: bridge
+
+volumes:
+  caddy_data:
+  caddy_config:

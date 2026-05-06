@@ -1,0 +1,10 @@
+.git
+.gitignore
+.serena/
+node_modules/
+dist/
+tmp/
+*.log
+auth_*/
+auth_admin_*/
+vendor/whiskeysockets-baileys/node_modules/

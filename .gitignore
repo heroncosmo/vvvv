@@ -24,6 +24,7 @@ check-*.ts
 debug-*.ts
 fix-*.ts
 run-*.ts
+!server/run-migrations.ts
 investigate-*.ts
 find-*.ts
 get-*.ts
@@ -103,3 +104,11 @@ supabase_*.json
 dist_test/
 uploads/
 
+
+scripts/diagnose-jessica-media.ts
+tmp_aiAgent_stage.ts
+server/tests/subscriptionChargeSummary.test.ts
+
+shared/subscriptionChargeSummary.ts
+.vercel
+2.0/infra/vps-single/secrets/

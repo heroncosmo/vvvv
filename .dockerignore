@@ -9,11 +9,22 @@
 node_modules/
 dist/
 server/public/
+2.0/
+.codex/
+.serena/
+.graphify/
 
 # Logs and temp
 *.log
 server.log
 tmp_admin_login.json
+tmp*
+.tmp/
+artifacts/
+output/
+graphify-out/
+validation-artifacts/
+validation-screenshots/
 
 # Auth/session dumps
 auth_*/
@@ -26,7 +37,6 @@ supabase-mcp-server/
 pix-por-piggly/
 
 # Assets not required for server runtime
-attached_assets/
 piggly.zip
 
 # Findeas theme: include only assets and landing-5.html
