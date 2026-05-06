@@ -56,6 +56,38 @@ import { getAccessEntitlement } from "./accessEntitlement";
 import { preWarmUserCaches } from "./cacheWarmer";
 
 
+function isTruthyFlag(value: string | undefined): boolean {
+  const normalized = String(value || "").trim().toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
+}
+
+function isFalsyFlag(value: string | undefined): boolean {
+  const normalized = String(value || "").trim().toLowerCase();
+  return normalized === "0" || normalized === "false" || normalized === "no" || normalized === "off";
+}
+
+function shouldAutoStartUserFollowUpService(): boolean {
+  if (process.env.DISABLE_BACKGROUND_SERVICES === "true") {
+    return false;
+  }
+
+  if (process.env.DISABLE_BACKGROUND_JOBS === "true") {
+    return false;
+  }
+
+  if (process.env.DISABLE_WHATSAPP_PROCESSING === "true") {
+    return false;
+  }
+
+  const explicitIntervalJobs = String(process.env.ENABLE_STATEFUL_INTERVAL_JOBS || "").trim();
+  if (explicitIntervalJobs) {
+    return isTruthyFlag(explicitIntervalJobs);
+  }
+
+  return !isFalsyFlag(process.env.ENABLE_USER_FOLLOWUP_AUTOSTART);
+}
+
+
 // ============================================
 
 // CACHE PARA BUCKETS DE STORAGE
@@ -1015,9 +1047,13 @@ Sitemap: https://agentezap.online/sitemap.xml
 
 
 
-  // Iniciar serviÃ§o de follow-up dos usuÃ¡rios
+  // Iniciar servico de follow-up dos usuarios somente quando o runtime permitir jobs.
 
-  userFollowUpService.start();
+  if (shouldAutoStartUserFollowUpService()) {
+    userFollowUpService.start();
+  } else {
+    console.log("[USER-FOLLOW-UP] Autostart disabled by runtime flags");
+  }
 
 
 

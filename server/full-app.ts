@@ -24,6 +24,11 @@ import { seedDatabase } from "./seed";
 import path from "path";
 import fs from "fs";
 
+function isFalsyFlag(value: string | undefined): boolean {
+  const normalized = String(value || "").trim().toLowerCase();
+  return normalized === "0" || normalized === "false" || normalized === "no" || normalized === "off";
+}
+
 // Module augmentation must be at top level
 declare module 'http' {
   interface IncomingMessage {
@@ -203,10 +208,14 @@ export async function startFullApp() {
     
     await new Promise(resolve => setTimeout(resolve, 2000));
     
-    const disableBackgroundJobs = process.env.DISABLE_WHATSAPP_PROCESSING === 'true';
+    const disableBackgroundJobs =
+      process.env.DISABLE_BACKGROUND_SERVICES === 'true' ||
+      process.env.DISABLE_BACKGROUND_JOBS === 'true' ||
+      process.env.DISABLE_WHATSAPP_PROCESSING === 'true' ||
+      isFalsyFlag(process.env.ENABLE_STATEFUL_INTERVAL_JOBS);
 
     if (disableBackgroundJobs) {
-      console.log('⚠️ [DEV MODE] Background jobs desabilitados (DISABLE_WHATSAPP_PROCESSING=true)');
+      console.log('[RUNTIME] Background jobs disabled by runtime flags');
       return;
     }
 
