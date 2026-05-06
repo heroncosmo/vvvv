@@ -33,6 +33,7 @@ ENV VITE_PWA_VERSION=${VITE_PWA_VERSION}
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN npm run build
+RUN mkdir -p public
 RUN npm prune --omit=dev --no-audit --no-fund
 
 FROM node:20-bookworm-slim AS runtime
