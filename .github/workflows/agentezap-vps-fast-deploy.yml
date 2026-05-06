@@ -149,6 +149,17 @@ jobs:
             "${{ secrets.AGENTEZAP_VPS_USER }}@${{ secrets.AGENTEZAP_VPS_HOST }}" \
             "docker login ghcr.io -u '${{ github.actor }}' --password-stdin"
 
+          set +e
           ssh -i ~/.ssh/agentezap_vps_key \
             "${{ secrets.AGENTEZAP_VPS_USER }}@${{ secrets.AGENTEZAP_VPS_HOST }}" \
             "cd /opt/agentezap-single/compose && IMAGE_OWNER='${{ env.IMAGE_OWNER }}' REGISTRY='${{ env.REGISTRY }}' ./scripts/fast-deploy.sh '${{ inputs.service }}' '${{ steps.vars.outputs.image_tag }}'"
+          deploy_status=$?
+          set -e
+
+          if [ "${deploy_status}" -ne 0 ] && { [ "${{ inputs.service }}" = "gateway" ] || [ "${{ inputs.service }}" = "all" ]; }; then
+            ssh -i ~/.ssh/agentezap_vps_key \
+              "${{ secrets.AGENTEZAP_VPS_USER }}@${{ secrets.AGENTEZAP_VPS_HOST }}" \
+              "cd /opt/agentezap-single/compose && docker compose --env-file .env.runtime -f compose.yml ps gateway || true && docker logs --tail 220 agentezap-gateway || true && docker inspect --format='health={{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}} exit={{.State.ExitCode}} error={{.State.Error}}' agentezap-gateway || true"
+          fi
+
+          exit "${deploy_status}"
