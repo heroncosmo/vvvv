@@ -133,6 +133,10 @@ services:
       SESSIONS_DIR: /data/whatsapp-sessions
       WA_GATEWAY_URL: http://gateway:5001
       WA_GATEWAY_EVENT_URL: http://api:5000/api/internal/wa-gateway/events
+      DISABLE_WHATSAPP_PROCESSING: "true"
+      SKIP_WHATSAPP_RESTORE: "true"
+      ENABLE_WA_SESSION_SNAPSHOTS: "false"
+      WA_GATEWAY_EVENT_OUTBOX_DISABLED: "true"
     expose:
       - "5001"
     volumes:

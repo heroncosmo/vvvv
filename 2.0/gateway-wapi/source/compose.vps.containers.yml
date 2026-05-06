@@ -1,0 +1,52 @@
+name: agentezap
+
+services:
+  agentezap-wa-gateway:
+    container_name: agentezap-wa-gateway
+    build:
+      context: ${AGENTEZAP_BUILD_CONTEXT:-/opt/agentezap/current}
+      dockerfile: Dockerfile
+      args:
+        SUPABASE_URL: ${SUPABASE_URL:-}
+        SUPABASE_ANON_KEY: ${SUPABASE_ANON_KEY:-}
+        VITE_SUPABASE_URL: ${VITE_SUPABASE_URL:-}
+        VITE_SUPABASE_ANON_KEY: ${VITE_SUPABASE_ANON_KEY:-}
+        PWA_VERSION: ${PWA_VERSION:-}
+        VITE_PWA_VERSION: ${VITE_PWA_VERSION:-}
+    restart: unless-stopped
+    env_file:
+      - ${AGENTEZAP_GATEWAY_ENV_FILE:-/opt/agentezap/containers/agentezap.wa-gateway.env}
+    environment:
+      NODE_ENV: production
+      PORT: "5001"
+      SERVICE_MODE: wa-gateway
+      SESSIONS_DIR: /data/whatsapp-sessions
+      WA_GATEWAY_URL: ${WA_GATEWAY_URL:-http://agentezap-wa-gateway:5001}
+      WA_GATEWAY_EVENT_URL: ${WA_GATEWAY_EVENT_URL:-https://agentezap.online/api/internal/wa-gateway/events}
+      WA_GATEWAY_EVENT_OUTBOX_CONCURRENCY: ${WA_GATEWAY_EVENT_OUTBOX_CONCURRENCY:-6}
+    ports:
+      - "${AGENTEZAP_GATEWAY_PORTS:-127.0.0.1:5001:5001}"
+    volumes:
+      - ${AGENTEZAP_UPLOADS_HOST_PATH:-/opt/agentezap/shared/runtime/uploads}:/app/uploads
+      - ${AGENTEZAP_ATTACHED_ASSETS_HOST_PATH:-/opt/agentezap/shared/runtime/attached_assets}:/app/attached_assets
+      - ${AGENTEZAP_TEMP_AUDIO_HOST_PATH:-/opt/agentezap/shared/runtime/temp_audio}:/app/temp_audio
+      - ${AGENTEZAP_LOGS_HOST_PATH:-/opt/agentezap/shared/runtime/logs}:/app/logs
+      - ${AGENTEZAP_SESSIONS_HOST_PATH:-/data/whatsapp-sessions}:/data/whatsapp-sessions
+    networks:
+      - agentezap-internal
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:5001/health').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 15s
+      timeout: 10s
+      retries: 8
+      start_period: 45s
+
+networks:
+  agentezap-internal:
+    driver: bridge

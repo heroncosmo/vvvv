@@ -98,6 +98,49 @@ jobs:
           chmod 600 ~/.ssh/agentezap_vps_key
           ssh-keyscan -H "${{ secrets.AGENTEZAP_VPS_HOST }}" >> ~/.ssh/known_hosts
 
+      - name: Enforce safe gateway staging flags
+        if: ${{ inputs.service == 'gateway' || inputs.service == 'all' }}
+        run: |
+          ssh -i ~/.ssh/agentezap_vps_key \
+            "${{ secrets.AGENTEZAP_VPS_USER }}@${{ secrets.AGENTEZAP_VPS_HOST }}" \
+            'python3 -' <<'PY'
+          from pathlib import Path
+
+          compose_path = Path('/opt/agentezap-single/compose/compose.yml')
+          lines = compose_path.read_text().splitlines()
+
+          try:
+              service_start = lines.index('  gateway:')
+              env_start = next(i for i in range(service_start, len(lines)) if lines[i] == '    environment:')
+          except (ValueError, StopIteration) as exc:
+              raise SystemExit(f'gateway environment block not found in {compose_path}') from exc
+
+          env_end = len(lines)
+          for i in range(env_start + 1, len(lines)):
+              if lines[i].startswith('    ') and not lines[i].startswith('      '):
+                  env_end = i
+                  break
+
+          flags = {
+              'DISABLE_WHATSAPP_PROCESSING': '"true"',
+              'SKIP_WHATSAPP_RESTORE': '"true"',
+              'ENABLE_WA_SESSION_SNAPSHOTS': '"false"',
+              'WA_GATEWAY_EVENT_OUTBOX_DISABLED': '"true"',
+          }
+
+          for key, value in flags.items():
+              prefix = f'      {key}:'
+              for i in range(env_start + 1, env_end):
+                  if lines[i].startswith(prefix):
+                      lines[i] = f'{prefix} {value}'
+                      break
+              else:
+                  lines.insert(env_end, f'{prefix} {value}')
+                  env_end += 1
+
+          compose_path.write_text('\n'.join(lines) + '\n')
+          PY
+
       - name: Deploy selected service
         env:
           GHCR_TOKEN: ${{ github.token }}
