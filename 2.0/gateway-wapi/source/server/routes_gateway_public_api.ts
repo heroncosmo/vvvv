@@ -446,7 +446,9 @@ export function registerGatewayPublicApiRoutes(app: Express) {
 
   app.post("/api/integration/instances/:instanceId/disconnect", async (req: Request, res: Response) => {
     await withGatewayConnection(req, res, async (connection) => {
-      await disconnectWhatsApp(connection.userId, connection.id);
+      await disconnectWhatsApp(connection.userId, connection.id, {
+        source: "gateway_public_api_disconnect",
+      });
       res.json({ success: true, instanceId: connection.id });
     });
   });

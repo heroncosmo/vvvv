@@ -1991,6 +1991,19 @@ function shouldBlockExplicitConnectForSkipRestore(source?: string): boolean {
   return !allowExplicitConnectWhileSkipRestore() || Boolean(source);
 }
 
+function isExplicitGatewayControlSource(source?: string): boolean {
+  const normalized = String(source || "").trim();
+  return normalized === "gateway_public_api_disconnect" || normalized === "gateway_public_api_reset";
+}
+
+function shouldBlockExplicitGatewayControlForSkipRestore(source?: string): boolean {
+  if (process.env.SKIP_WHATSAPP_RESTORE !== "true") {
+    return false;
+  }
+
+  return !allowExplicitConnectWhileSkipRestore() || !isExplicitGatewayControlSource(source);
+}
+
 // ?? SISTEMA DE ACUMULA??O DE MENSAGENS
 // Rastreia timeouts pendentes e mensagens acumuladas por conversa
 interface PendingResponse {
@@ -6002,11 +6015,15 @@ export async function forceResetWhatsApp(
   options?: ForceResetOptions,
 ): Promise<void> {
   // ??? MODO DESENVOLVIMENTO: Bloquear reset para evitar conflito com produï¿½ï¿½o
-  if (process.env.SKIP_WHATSAPP_RESTORE === 'true') {
+  if (shouldBlockExplicitGatewayControlForSkipRestore(options?.source)) {
     console.log(`\n??? [DEV MODE] forceResetWhatsApp bloqueado para user ${userId}`);
     console.log(`   ?? SKIP_WHATSAPP_RESTORE=true - Modo desenvolvimento ativo`);
     console.log(`   ? Sessï¿½es do WhatsApp em produï¿½ï¿½o nï¿½o serï¿½o afetadas\n`);
     throw new Error('WhatsApp desabilitado em modo desenvolvimento (SKIP_WHATSAPP_RESTORE=true). Isso protege suas sessï¿½es em produï¿½ï¿½o.');
+  } else if (process.env.SKIP_WHATSAPP_RESTORE === "true") {
+    console.log(
+      `[WA GATEWAY] Explicit reset allowed while SKIP_WHATSAPP_RESTORE=true user=${userId.substring(0, 8)} conn=${(connectionId || userId).substring(0, 8)}`,
+    );
   }
 
   const ownership = await shouldSkipConnectionForCurrentRuntime(userId, connectionId);
@@ -14276,13 +14293,25 @@ export function getConnectionHealth(userId?: string): {
   };
 }
 
-export async function disconnectWhatsApp(userId: string, connectionId?: string): Promise<void> {
+type DisconnectWhatsAppOptions = {
+  source?: string;
+};
+
+export async function disconnectWhatsApp(
+  userId: string,
+  connectionId?: string,
+  options?: DisconnectWhatsAppOptions,
+): Promise<void> {
   // ??? MODO DESENVOLVIMENTO: Bloquear desconexï¿½es para evitar conflito com produï¿½ï¿½o
-  if (process.env.SKIP_WHATSAPP_RESTORE === 'true') {
+  if (shouldBlockExplicitGatewayControlForSkipRestore(options?.source)) {
     console.log(`\n??? [DEV MODE] disconnectWhatsApp bloqueado para user ${userId}`);
     console.log(`   ?? SKIP_WHATSAPP_RESTORE=true - Modo desenvolvimento ativo`);
     console.log(`   ? Sessï¿½es do WhatsApp em produï¿½ï¿½o nï¿½o serï¿½o afetadas\n`);
     throw new Error('WhatsApp desabilitado em modo desenvolvimento (SKIP_WHATSAPP_RESTORE=true). Isso protege suas sessï¿½es em produï¿½ï¿½o.');
+  } else if (process.env.SKIP_WHATSAPP_RESTORE === "true") {
+    console.log(
+      `[WA GATEWAY] Explicit disconnect allowed while SKIP_WHATSAPP_RESTORE=true user=${userId.substring(0, 8)} conn=${(connectionId || userId).substring(0, 8)}`,
+    );
   }
 
   const ownership = await shouldSkipConnectionForCurrentRuntime(userId, connectionId);
