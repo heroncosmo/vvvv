@@ -569,13 +569,13 @@ function normalizePortugueseSeedText(value: unknown): unknown {
 }
 
 function normalizeSeedRecord<T extends Record<string, any>>(record: T): T {
-  return {
-    ...record,
-    name: normalizePortugueseSeedText(record.name),
-    label: normalizePortugueseSeedText(record.label),
-    description: normalizePortugueseSeedText(record.description),
-    ai_extraction_prompt: normalizePortugueseSeedText(record.ai_extraction_prompt),
-  } as T;
+  const normalized = { ...record };
+  for (const key of ["name", "label", "description", "ai_extraction_prompt"] as const) {
+    if (Object.prototype.hasOwnProperty.call(normalized, key)) {
+      normalized[key] = normalizePortugueseSeedText(normalized[key]) as any;
+    }
+  }
+  return normalized;
 }
 
 
