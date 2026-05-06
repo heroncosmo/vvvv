@@ -33,9 +33,5 @@
 	@internal path /internal/*
 	respond @internal 404
 
-	reverse_proxy gateway:5001 {
-		health_uri /health
-		health_interval 10s
-		health_timeout 3s
-	}
+	reverse_proxy gateway:5001
 }
