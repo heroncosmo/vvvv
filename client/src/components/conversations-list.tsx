@@ -64,9 +64,28 @@ interface ConversationsListProps {
   onSelectConversation: (id: string) => void;
 }
 
+const QUESTION_MARK_ACCENT_REPAIRS: Array<[RegExp, string]> = [
+  [/voc\?\?/gi, "você?"],
+  [/voc\?/gi, "você"],
+  [/tr\?fego/gi, "tráfego"],
+  [/d\?vidas/gi, "dúvidas"],
+  [/d\?vida/gi, "dúvida"],
+  [/v\?deo/gi, "vídeo"],
+  [/m\?dias/gi, "mídias"],
+  [/m\?dia/gi, "mídia"],
+  [/configura\?\?o/gi, "configuração"],
+  [/produ\?\?o/gi, "produção"],
+  [/cat\?logo/gi, "catálogo"],
+  [/n\?o/gi, "não"],
+];
+
 function normalizeConversationPreviewText(text?: string | null): string {
-  const value = String(text || "");
+  let value = String(text || "");
   if (!value) return "";
+
+  for (const [pattern, replacement] of QUESTION_MARK_ACCENT_REPAIRS) {
+    value = value.replace(pattern, replacement);
+  }
 
   const normalized = value
     .normalize("NFD")

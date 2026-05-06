@@ -7628,59 +7628,26 @@ Se nÃ£o encontrar um valor, retorne value como null. A confidence deve ser ent
 
       const userId = getUserId(req);
 
+      const existingConfig = await pool.query(
+        `SELECT *
+         FROM products_config
+         WHERE user_id = $1
+         LIMIT 1`,
+        [userId]
+      );
 
-
-      let { data, error } = await supabase
-
-        .from('products_config')
-
-        .select('*')
-
-        .eq('user_id', userId)
-
-        .single();
-
-
-
-      if (error && error.code === 'PGRST116') {
-
-        // NÃ£o existe, cria com valores padrÃ£o - DESATIVADO por padrÃ£o
-
-        const { data: newConfig, error: insertError } = await supabase
-
-          .from('products_config')
-
-          .insert({
-
-            id: randomUUID(),
-
-            user_id: userId,
-
-            is_active: false, // DESATIVADO por padrÃ£o - ativar via toggle
-
-            send_to_ai: true
-
-          })
-
-          .select()
-
-          .single();
-
-
-
-        if (insertError) throw insertError;
-
-        data = newConfig;
-
-      } else if (error) {
-
-        throw error;
-
+      if (existingConfig.rows[0]) {
+        return res.json(existingConfig.rows[0]);
       }
 
+      const createdConfig = await pool.query(
+        `INSERT INTO products_config (id, user_id, is_active, send_to_ai)
+         VALUES ($1, $2, false, true)
+         RETURNING *`,
+        [randomUUID(), userId]
+      );
 
-
-      res.json(data);
+      res.json(createdConfig.rows[0]);
 
     } catch (error) {
 
@@ -7730,65 +7697,45 @@ Se nÃ£o encontrar um valor, retorne value como null. A confidence deve ser ent
 
 
 
-      // Tenta update primeiro
+      const existing = await pool.query(
+        `SELECT id
+         FROM products_config
+         WHERE user_id = $1
+         LIMIT 1`,
+        [userId]
+      );
 
-      const { data: existing } = await supabase
+      const columns = Object.keys(updateData);
+      const values = Object.values(updateData);
+      let result;
 
-        .from('products_config')
-
-        .select('id')
-
-        .eq('user_id', userId)
-
-        .single();
-
-
-
-      let data;
-
-      if (existing) {
-
-        const { data: updated, error } = await supabase
-
-          .from('products_config')
-
-          .update(updateData)
-
-          .eq('user_id', userId)
-
-          .select()
-
-          .single();
-
-
-
-        if (error) throw error;
-
-        data = updated;
-
+      if (existing.rows[0]) {
+        const setClause = columns.map((column, index) => `${column} = $${index + 2}`).join(", ");
+        result = await pool.query(
+          `UPDATE products_config
+           SET ${setClause}
+           WHERE user_id = $1
+           RETURNING *`,
+          [userId, ...values]
+        );
       } else {
-
-        const { data: created, error } = await supabase
-
-          .from('products_config')
-
-          .insert({ id: randomUUID(), user_id: userId, ...updateData })
-
-          .select()
-
-          .single();
-
-
-
-        if (error) throw error;
-
-        data = created;
-
+        const insertData: Record<string, unknown> = {
+          id: randomUUID(),
+          user_id: userId,
+          ...updateData,
+        };
+        const insertColumns = Object.keys(insertData);
+        const insertValues = Object.values(insertData);
+        const placeholders = insertColumns.map((_, index) => `$${index + 1}`).join(", ");
+        result = await pool.query(
+          `INSERT INTO products_config (${insertColumns.join(", ")})
+           VALUES (${placeholders})
+           RETURNING *`,
+          insertValues
+        );
       }
 
-
-
-      res.json(data);
+      res.json(result.rows[0]);
 
     } catch (error) {
 
