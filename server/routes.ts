@@ -18768,7 +18768,7 @@ Responda APENAS com o JSON, sem texto adicional.`;
 
       if (!code) {
 
-        return res.status(400).json({ valid: false, message: "CÃ³digo nÃ£o informado" });
+        return res.status(400).json({ valid: false, message: "Código não informado" });
 
       }
 
@@ -18792,7 +18792,7 @@ Responda APENAS com o JSON, sem texto adicional.`;
 
       if (!plan) {
 
-        return res.json({ valid: false, message: "CÃ³digo de plano nÃ£o encontrado" });
+        return res.json({ valid: false, message: "Código de plano não encontrado" });
 
       }
 
