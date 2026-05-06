@@ -578,6 +578,54 @@ function normalizeSeedRecord<T extends Record<string, any>>(record: T): T {
   return normalized;
 }
 
+function getGatewayBaseUrl(): string {
+  return String(process.env.WA_GATEWAY_URL || "").trim().replace(/\/+$/, "");
+}
+
+function isLocalWhatsAppRuntimeDisabled(): boolean {
+  return (
+    process.env.SKIP_WHATSAPP_RESTORE === "true" ||
+    process.env.DISABLE_WHATSAPP_PROCESSING === "true" ||
+    process.env.DISABLE_LOCAL_WHATSAPP_RUNTIME === "true" ||
+    process.env.DISABLE_LEGACY_WHATSAPP_RUNTIME === "true"
+  );
+}
+
+function shouldRouteCustomerBaileysToGateway(): boolean {
+  return Boolean(getGatewayBaseUrl()) && isLocalWhatsAppRuntimeDisabled();
+}
+
+async function requestInternalGateway(path: string, init: RequestInit = {}) {
+  const baseUrl = getGatewayBaseUrl();
+  if (!baseUrl) {
+    throw new Error("WA_GATEWAY_URL nao configurado");
+  }
+
+  const token = String(process.env.WA_GATEWAY_INTERNAL_TOKEN || "agentezap-internal-wa-gateway").trim();
+  const headers = new Headers(init.headers || {});
+  headers.set("content-type", "application/json");
+  headers.set("x-wa-gateway-token", token);
+
+  const response = await fetch(`${baseUrl}${path}`, {
+    ...init,
+    headers,
+  });
+
+  const text = await response.text();
+  let payload: any = null;
+  try {
+    payload = text ? JSON.parse(text) : null;
+  } catch {
+    payload = { message: text };
+  }
+
+  if (!response.ok) {
+    throw new Error(payload?.message || `Gateway request failed with status ${response.status}`);
+  }
+
+  return payload;
+}
+
 
 
 // Helper to get userId from authenticated request
@@ -4186,9 +4234,6 @@ Responda apenas com o nÃºmero do Ã­ndice (0 a ${optionsList.length - 1}) ou 
   // Connect a specific connection (creates WhatsApp socket for it)
   app.post("/api/whatsapp/connections/:connectionId/connect", isAuthenticated, async (req: any, res) => {
     try {
-      if (process.env.SKIP_WHATSAPP_RESTORE === 'true') {
-        return res.status(403).json({ success: false, message: 'Modo desenvolvimento - WhatsApp desabilitado' });
-      }
       const userId = getUserId(req);
       const { connectionId } = req.params;
       
@@ -4207,6 +4252,27 @@ Responda apenas com o nÃºmero do Ã­ndice (0 a ${optionsList.length - 1}) ou 
       // FIX 2026-05-27: Respond immediately — WebSocket handles QR + status updates.
       // Baileys' internal 515 restart (after QR scan) caused close_before_open rejection
       // which made the HTTP request fail even though the connection eventually succeeds.
+      if (shouldRouteCustomerBaileysToGateway()) {
+        const gatewayResponse = await requestInternalGateway(`/api/integration/instances/${connectionId}/connect`, {
+          method: "POST",
+          body: JSON.stringify({}),
+        });
+
+        return res.json({
+          success: true,
+          connectionId,
+          status: gatewayResponse?.status || "connecting",
+          owner: "gateway",
+        });
+      }
+
+      if (isLocalWhatsAppRuntimeDisabled()) {
+        return res.status(403).json({
+          success: false,
+          message: "WhatsApp local desabilitado neste runtime. Use o gateway.",
+        });
+      }
+
       connectWhatsApp(userId, connectionId).catch(err => {
         console.log(`[MULTI-CONN] Connection ${connectionId.substring(0, 8)} init error (auto-retry handles it): ${err.message}`);
       });
@@ -4220,9 +4286,6 @@ Responda apenas com o nÃºmero do Ã­ndice (0 a ${optionsList.length - 1}) ou 
   // Disconnect a specific connection
   app.post("/api/whatsapp/connections/:connectionId/disconnect", isAuthenticated, async (req: any, res) => {
     try {
-      if (process.env.SKIP_WHATSAPP_RESTORE === 'true') {
-        return res.status(403).json({ success: false, message: 'Modo desenvolvimento - WhatsApp desabilitado' });
-      }
       const userId = getUserId(req);
       const { connectionId } = req.params;
       
@@ -4231,6 +4294,22 @@ Responda apenas com o nÃºmero do Ã­ndice (0 a ${optionsList.length - 1}) ou 
         return res.status(404).json({ message: "ConexÃ£o nÃ£o encontrada" });
       }
       
+      if (shouldRouteCustomerBaileysToGateway()) {
+        await requestInternalGateway(`/api/integration/instances/${connectionId}/disconnect`, {
+          method: "POST",
+          body: JSON.stringify({}),
+        });
+
+        return res.json({ success: true, connectionId, owner: "gateway" });
+      }
+
+      if (isLocalWhatsAppRuntimeDisabled()) {
+        return res.status(403).json({
+          success: false,
+          message: "WhatsApp local desabilitado neste runtime. Use o gateway.",
+        });
+      }
+
       await disconnectWhatsApp(userId, connectionId);
       res.json({ success: true, connectionId });
     } catch (error) {
@@ -4242,9 +4321,6 @@ Responda apenas com o nÃºmero do Ã­ndice (0 a ${optionsList.length - 1}) ou 
   // Reset a specific connection (force new QR code)
   app.post("/api/whatsapp/connections/:connectionId/reset", isAuthenticated, async (req: any, res) => {
     try {
-      if (process.env.SKIP_WHATSAPP_RESTORE === 'true') {
-        return res.status(403).json({ success: false, message: 'Modo desenvolvimento - WhatsApp desabilitado' });
-      }
       const userId = getUserId(req);
       const { connectionId } = req.params;
       
@@ -4253,6 +4329,27 @@ Responda apenas com o nÃºmero do Ã­ndice (0 a ${optionsList.length - 1}) ou 
         return res.status(404).json({ message: "ConexÃ£o nÃ£o encontrada" });
       }
       
+      if (shouldRouteCustomerBaileysToGateway()) {
+        await requestInternalGateway(`/api/integration/instances/${connectionId}/reset`, {
+          method: "POST",
+          body: JSON.stringify({}),
+        });
+
+        return res.json({
+          success: true,
+          message: "Conexao resetada. Escaneie o novo QR Code.",
+          connectionId,
+          owner: "gateway",
+        });
+      }
+
+      if (isLocalWhatsAppRuntimeDisabled()) {
+        return res.status(403).json({
+          success: false,
+          message: "WhatsApp local desabilitado neste runtime. Use o gateway.",
+        });
+      }
+
       await forceResetWhatsApp(userId, connectionId);
       res.json({ success: true, message: "ConexÃ£o resetada. Escaneie o novo QR Code.", connectionId });
     } catch (error) {
@@ -4337,6 +4434,32 @@ Responda apenas com o nÃºmero do Ã­ndice (0 a ${optionsList.length - 1}) ou 
       // FIX 2026-05-27: Respond immediately — WebSocket handles QR + status updates.
       // Baileys' internal 515 restart (after QR scan) caused close_before_open rejection
       // which made the HTTP request fail even though the connection eventually succeeds.
+      if (shouldRouteCustomerBaileysToGateway()) {
+        const connection = await storage.getConnectionByUserId(userId);
+        if (!connection) {
+          return res.status(404).json({ message: "Conexao nao encontrada" });
+        }
+
+        const gatewayResponse = await requestInternalGateway(`/api/integration/instances/${connection.id}/connect`, {
+          method: "POST",
+          body: JSON.stringify({}),
+        });
+
+        return res.json({
+          success: true,
+          connectionId: connection.id,
+          status: gatewayResponse?.status || "connecting",
+          owner: "gateway",
+        });
+      }
+
+      if (isLocalWhatsAppRuntimeDisabled()) {
+        return res.status(403).json({
+          success: false,
+          message: "WhatsApp local desabilitado neste runtime. Use o gateway.",
+        });
+      }
+
       connectWhatsApp(userId).catch(err => {
         console.log(`[CONNECT] Connection init error for ${userId.substring(0, 8)} (auto-retry handles it): ${err.message}`);
       });
@@ -4379,6 +4502,27 @@ Responda apenas com o nÃºmero do Ã­ndice (0 a ${optionsList.length - 1}) ou 
 
 
       const userId = getUserId(req);
+
+      if (shouldRouteCustomerBaileysToGateway()) {
+        const connection = await storage.getConnectionByUserId(userId);
+        if (!connection) {
+          return res.status(404).json({ message: "Conexao nao encontrada" });
+        }
+
+        await requestInternalGateway(`/api/integration/instances/${connection.id}/disconnect`, {
+          method: "POST",
+          body: JSON.stringify({}),
+        });
+
+        return res.json({ success: true, connectionId: connection.id, owner: "gateway" });
+      }
+
+      if (isLocalWhatsAppRuntimeDisabled()) {
+        return res.status(403).json({
+          success: false,
+          message: "WhatsApp local desabilitado neste runtime. Use o gateway.",
+        });
+      }
 
       await disconnectWhatsApp(userId);
 
@@ -4453,6 +4597,27 @@ Responda apenas com o nÃºmero do Ã­ndice (0 a ${optionsList.length - 1}) ou 
 
 
       // Chamar forceResetWhatsApp (funÃ§Ã£o que limpa auth e atualiza DB)
+
+      if (shouldRouteCustomerBaileysToGateway()) {
+        await requestInternalGateway(`/api/integration/instances/${connection.id}/reset`, {
+          method: "POST",
+          body: JSON.stringify({}),
+        });
+
+        return res.json({
+          success: true,
+          message: "Conexao resetada com sucesso. Escaneie o QR Code novamente.",
+          connectionId: connection.id,
+          owner: "gateway",
+        });
+      }
+
+      if (isLocalWhatsAppRuntimeDisabled()) {
+        return res.status(403).json({
+          success: false,
+          message: "WhatsApp local desabilitado neste runtime. Use o gateway.",
+        });
+      }
 
       const { forceResetWhatsApp } = await import("./whatsapp");
 
