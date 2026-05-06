@@ -30,8 +30,5 @@
 {$AGENTEZAP_GATEWAY_DOMAIN} {
 	encode zstd gzip
 
-	@internal path /internal/*
-	respond @internal 404
-
-	reverse_proxy gateway:5001
+	respond "gateway staging disabled" 503
 }
