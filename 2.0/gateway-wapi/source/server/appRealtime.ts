@@ -62,6 +62,14 @@ export function addAdminWebSocketClient(ws: AuthenticatedRealtimeSocket, adminId
   });
 }
 
+export function hasUserRealtimeClient(userId: string): boolean {
+  return Boolean(userRealtimeClients.get(userId)?.size);
+}
+
+export function hasAdminRealtimeClient(adminId: string): boolean {
+  return Boolean(adminRealtimeClients.get(adminId)?.size);
+}
+
 function broadcastToLocalClients(
   clients: Set<AuthenticatedRealtimeSocket> | undefined,
   payload: unknown,

@@ -145,6 +145,8 @@ import {
   addWebSocketClient,
   broadcastToAdmin,
   broadcastToUser,
+  hasAdminRealtimeClient,
+  hasUserRealtimeClient,
 } from "./appRealtime";
 import {
   archiveWhatsAppSessionSnapshotBeforeClear,
@@ -1981,14 +1983,28 @@ function allowExplicitConnectWhileSkipRestore(): boolean {
   return value === "1" || value === "true" || value === "yes" || value === "on";
 }
 
+function isAllowedSkipRestoreConnectSource(source?: string): boolean {
+  const normalized = String(source || "").trim();
+  if (!normalized) {
+    return true;
+  }
+
+  // Baileys can emit 515 "restart required" right after QR scan. That reconnect
+  // uses the just-created auth files and is not a session restore sweep.
+  return normalized === "close_reconnect_backoff"
+    || normalized === "close_reconnect_long_tail"
+    || normalized === "logout_auto_retry";
+}
+
 function shouldBlockExplicitConnectForSkipRestore(source?: string): boolean {
   if (process.env.SKIP_WHATSAPP_RESTORE !== "true") {
     return false;
   }
 
   // Staging needs a safe way to generate a new QR without restoring every
-  // production session. Only direct connect/pairing requests omit source.
-  return !allowExplicitConnectWhileSkipRestore() || Boolean(source);
+  // production session. Allow only direct QR actions and their immediate
+  // socket-level reconnects; health/recovery/cron restores remain blocked.
+  return !allowExplicitConnectWhileSkipRestore() || !isAllowedSkipRestoreConnectSource(source);
 }
 
 function isExplicitGatewayControlSource(source?: string): boolean {
@@ -7429,7 +7445,7 @@ export async function connectWhatsApp(
           // ï¿½nico para gerar o QR code sem exigir um segundo clique.
           // -----------------------------------------------------------------------
           const now = Date.now();
-          const hasLiveClient = wsClients.has(userId); // Cliente estï¿½ na tela
+          const hasLiveClient = hasUserRealtimeClient(userId); // Cliente esta na tela deste runtime
           const retryState = logoutAutoRetry.get(userId) || { count: 0, lastAttempt: 0 };
 
           // Resetar contador se passou do cooldown
@@ -16415,7 +16431,7 @@ export async function connectAdminWhatsApp(adminId: string): Promise<void> {
           adminReconnectAttempts.delete(adminId);
 
           // ?? AUTO-RETRY APï¿½S LOGOUT
-          const hasLiveClient = adminWsClients.has(adminId);
+          const hasLiveClient = hasAdminRealtimeClient(adminId);
           const retryState = adminLogoutAutoRetry.get(adminId) || { count: 0, lastAttempt: 0 };
 
           if (now - retryState.lastAttempt > ADMIN_LOGOUT_AUTO_RETRY_COOLDOWN_MS) {
