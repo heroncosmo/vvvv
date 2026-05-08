@@ -297,6 +297,7 @@ export class UserFollowUpService {
   private isRunning = false;
   // 🔧 FIX: Guard contra ciclos sobrepostos (timer overlap pode spammar leads)
   private isProcessingCycle = false;
+  private isRepairingSchedules = false;
   private onFollowUpReady: FollowUpCallback | null = null;
 
   start() {
@@ -501,6 +502,95 @@ export class UserFollowUpService {
     return { scanned, repaired, skipped };
   }
 
+  private async pruneUnsafeScheduledFollowUps(): Promise<number> {
+    const results = await Promise.all([
+      db.execute(sql`
+        UPDATE conversations
+        SET next_followup_at = NULL,
+            followup_disabled_reason = ${FOLLOWUP_GROUP_DISABLED_REASON},
+            updated_at = NOW()
+        WHERE followup_active = true
+          AND next_followup_at IS NOT NULL
+          AND (
+            LOWER(COALESCE(remote_jid, '')) LIKE '%@g.us%'
+            OR LOWER(COALESCE(contact_number, '')) LIKE '%@g.us%'
+            OR LOWER(COALESCE(contact_number, '')) LIKE '%-group'
+          )
+        RETURNING id
+      `),
+      db.execute(sql`
+        UPDATE conversations c
+        SET next_followup_at = NULL,
+            followup_disabled_reason = ${FOLLOWUP_CONNECTION_REMOVED_REASON},
+            updated_at = NOW()
+        WHERE c.followup_active = true
+          AND c.next_followup_at IS NOT NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM whatsapp_connections wc
+            WHERE wc.id = c.connection_id
+          )
+        RETURNING c.id
+      `),
+      db.execute(sql`
+        UPDATE conversations c
+        SET next_followup_at = NULL,
+            followup_disabled_reason = ${WAITING_FOR_WHATSAPP_CONNECTION_REASON},
+            updated_at = NOW()
+        FROM whatsapp_connections wc
+        WHERE wc.id = c.connection_id
+          AND c.followup_active = true
+          AND c.next_followup_at IS NOT NULL
+          AND COALESCE(wc.is_connected, false) IS NOT TRUE
+          AND LOWER(COALESCE(wc.provider_status, '')) NOT IN ('connected', 'open')
+        RETURNING c.id
+      `),
+      db.execute(sql`
+        UPDATE conversations c
+        SET next_followup_at = NULL,
+            followup_disabled_reason = ${FOLLOWUP_OWNER_UNVERIFIED_REASON},
+            updated_at = NOW()
+        FROM whatsapp_connections wc
+        WHERE wc.id = c.connection_id
+          AND c.followup_active = true
+          AND c.next_followup_at IS NOT NULL
+          AND NULLIF(regexp_replace(COALESCE(c.owner_phone_number, ''), '\\D', '', 'g'), '') IS NULL
+        RETURNING c.id
+      `),
+      db.execute(sql`
+        UPDATE conversations c
+        SET next_followup_at = NULL,
+            followup_disabled_reason = ${FOLLOWUP_OWNER_MISMATCH_REASON},
+            updated_at = NOW()
+        FROM whatsapp_connections wc
+        WHERE wc.id = c.connection_id
+          AND c.followup_active = true
+          AND c.next_followup_at IS NOT NULL
+          AND NULLIF(regexp_replace(COALESCE(c.owner_phone_number, ''), '\\D', '', 'g'), '') IS NOT NULL
+          AND NULLIF(regexp_replace(COALESCE(wc.phone_number, ''), '\\D', '', 'g'), '') IS NOT NULL
+          AND regexp_replace(COALESCE(c.owner_phone_number, ''), '\\D', '', 'g') <> regexp_replace(COALESCE(wc.phone_number, ''), '\\D', '', 'g')
+        RETURNING c.id
+      `),
+    ]);
+
+    const pruned = results.reduce((total, result: any) => total + ((result.rows || []).length || 0), 0);
+    if (pruned > 0) {
+      console.log(`[USER-FOLLOW-UP] Unsafe scheduled cleanup: ${pruned} conversations held out of queue`);
+    }
+    return pruned;
+  }
+
+  private runBestEffortScheduleRepair(limit: number = 250): void {
+    if (this.isRepairingSchedules) return;
+    this.isRepairingSchedules = true;
+    this.repairMissingSchedules(limit)
+      .catch((error) => {
+        console.error("[USER-FOLLOW-UP] Background schedule repair failed:", error);
+      })
+      .finally(() => {
+        this.isRepairingSchedules = false;
+      });
+  }
+
   /**
    * Processa todas as conversas pendentes de follow-up
    */
@@ -519,6 +609,7 @@ export class UserFollowUpService {
       // Isso permite processar follow-ups de usuários conectados mesmo se outros não estão
       
       const now = new Date();
+      await this.pruneUnsafeScheduledFollowUps();
       
       // Buscar conversas que precisam de follow-up
       const pendingConversations = await db.query.conversations.findMany({
@@ -578,6 +669,7 @@ export class UserFollowUpService {
       console.error("❌ [USER-FOLLOW-UP] Erro ao processar follow-ups:", error);
     } finally {
       this.isProcessingCycle = false;
+      this.runBestEffortScheduleRepair();
     }
   }
 
