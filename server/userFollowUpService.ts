@@ -519,7 +519,6 @@ export class UserFollowUpService {
       // Isso permite processar follow-ups de usuários conectados mesmo se outros não estão
       
       const now = new Date();
-      await this.repairMissingSchedules();
       
       // Buscar conversas que precisam de follow-up
       const pendingConversations = await db.query.conversations.findMany({
