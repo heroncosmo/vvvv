@@ -81,6 +81,11 @@ function shouldAutoStartUserFollowUpService(): boolean {
     return false;
   }
 
+  const explicitUserFollowupAutostart = String(process.env.ENABLE_USER_FOLLOWUP_AUTOSTART || "").trim();
+  if (explicitUserFollowupAutostart) {
+    return isTruthyFlag(explicitUserFollowupAutostart);
+  }
+
   const explicitIntervalJobs = String(process.env.ENABLE_STATEFUL_INTERVAL_JOBS || "").trim();
   if (explicitIntervalJobs) {
     return isTruthyFlag(explicitIntervalJobs);
