@@ -8,7 +8,7 @@ import {
   users,
   businessAgentConfigs
 } from "@shared/schema";
-import { eq, and, lte, isNotNull } from "drizzle-orm";
+import { eq, and, lte, isNotNull, isNull, sql } from "drizzle-orm";
 import { getLLMClient } from "./llm";
 import { storage } from "./storage";
 import { getSessions } from "./whatsapp";
@@ -138,18 +138,98 @@ setInterval(() => {
   }
 }, 10 * 60 * 1000); // Limpar a cada 10 minutos
 
+const WAITING_FOR_WHATSAPP_CONNECTION_REASON = "Aguardando conexao WhatsApp...";
+const FOLLOWUP_GROUP_DISABLED_REASON = "Follow-up automatico nao esta disponivel para grupos.";
+const FOLLOWUP_OWNER_UNVERIFIED_REASON = "Aguardando confirmacao do numero dono da conversa.";
+const FOLLOWUP_OWNER_MISMATCH_REASON = "Numero dono da conversa nao confere com a conexao atual. Follow-up bloqueado para evitar envio pelo numero errado.";
+const FOLLOWUP_CONNECTION_REMOVED_REASON = "Conexao removida - sem userId";
+const WAITING_FOR_COMPANY_REPLY_REASON = "Aguardando resposta da empresa.";
+
+function normalizePhoneDigits(value?: string | null): string {
+  return String(value || "").replace(/\D/g, "");
+}
+
+function isGroupConversationForFollowUp(conversation: any): boolean {
+  const remoteJid = String(conversation?.remoteJid || "").toLowerCase();
+  const contactNumber = String(conversation?.contactNumber || "").toLowerCase();
+  return remoteJid.includes("@g.us") || contactNumber.includes("@g.us") || contactNumber.endsWith("-group");
+}
+
+function getConnectionPhone(connection: any, status?: any): string {
+  return normalizePhoneDigits(status?.phoneNumber || status?.connectedPhone || connection?.phoneNumber);
+}
+
+function gatewayStatusLooksConnected(status: any): boolean {
+  if (!status) return false;
+  if (status.isConnected === true) return true;
+  const providerStatus = String(status.providerStatus || status.status || "").toLowerCase();
+  return providerStatus === "connected" || providerStatus === "open";
+}
+
+async function requestGateway(path: string): Promise<any | null> {
+  const baseUrl = String(process.env.WA_GATEWAY_URL || "").trim().replace(/\/+$/, "");
+  if (!baseUrl) return null;
+
+  const token = String(process.env.WA_GATEWAY_INTERNAL_TOKEN || "agentezap-internal-wa-gateway").trim();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15_000);
+  try {
+    const response = await fetch(`${baseUrl}${path}`, {
+      headers: {
+        "content-type": "application/json",
+        "x-wa-gateway-token": token,
+      },
+      signal: controller.signal,
+    });
+    const text = await response.text();
+    const payload = text ? JSON.parse(text) : null;
+    if (!response.ok) return null;
+    return payload;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function getGatewayStatusForConnection(connectionId: string): Promise<any | null> {
+  return requestGateway(`/api/integration/instances/${connectionId}/status`);
+}
+
+function getConnectionBoundaryDate(connection: any): Date | null {
+  const diagnostics = connection?.sessionData?.runtimeDiagnostics;
+  const candidates = [
+    diagnostics?.lastForceReset?.at,
+    diagnostics?.lastLogout?.at,
+    diagnostics?.lastQrCode?.at,
+  ]
+    .map((value) => value ? new Date(value) : null)
+    .filter((date): date is Date => Boolean(date && Number.isFinite(date.getTime())));
+  if (candidates.length === 0) return null;
+  return new Date(Math.max(...candidates.map((date) => date.getTime())));
+}
+
 /**
  * Verifica se um usuário específico tem conexão WhatsApp ativa em memória
  * 🚀 OTIMIZADO: Não faz query no DB, apenas verifica memória
  * 
  * IMPORTANTE: Baileys usa socket.user para indicar conexão ativa (não socket.ws.readyState)
  */
-function isUserConnectionActive(userId: string, preferredConnectionId?: string): boolean {
+async function isUserConnectionActive(userId: string, preferredConnectionId?: string): Promise<boolean> {
   const sessions = getSessions();
   if (preferredConnectionId) {
     const preferred = sessions.get(preferredConnectionId);
-    if (!preferred || preferred.userId !== userId) return false;
-    return preferred.isOpen === true && preferred.socket?.user !== undefined;
+    if (preferred?.userId === userId && preferred.isOpen === true && preferred.socket?.user !== undefined) {
+      return true;
+    }
+
+    const connection = await storage.getConnectionById(preferredConnectionId).catch(() => null);
+    if (!connection || connection.userId !== userId) return false;
+    const status = await getGatewayStatusForConnection(preferredConnectionId);
+    if (gatewayStatusLooksConnected(status)) return true;
+
+    const persistedStatus = String((connection as any).providerStatus || "").toLowerCase();
+    return connection.isConnected === true || persistedStatus === "connected";
   }
 
   const candidates = Array.from(sessions.values()).filter((s) => s.userId === userId);
@@ -244,6 +324,183 @@ export class UserFollowUpService {
     console.log("📲 [USER-FOLLOW-UP] Callback registrado");
   }
 
+  private async holdFollowUpOutOfQueue(conversation: any, reason: string): Promise<void> {
+    await db.update(conversations)
+      .set({
+        nextFollowupAt: null,
+        followupDisabledReason: reason,
+        updatedAt: new Date(),
+      })
+      .where(eq(conversations.id, conversation.id));
+  }
+
+  private async getLatestRealConversationMessage(conversationId: string): Promise<any | null> {
+    const result = await db.execute(sql`
+      SELECT id, from_me as "fromMe", text, media_type as "mediaType", timestamp, created_at as "createdAt"
+      FROM messages
+      WHERE conversation_id = ${conversationId}
+        AND (
+          NULLIF(BTRIM(COALESCE(text, '')), '') IS NOT NULL
+          OR media_type IS NOT NULL
+          OR media_url IS NOT NULL
+        )
+      ORDER BY COALESCE(timestamp, created_at) DESC
+      LIMIT 1
+    `);
+    return (result.rows || [])[0] || null;
+  }
+
+  private async tryBackfillOwnerPhoneFromCurrentConnection(conversation: any, connection: any, connectionPhone: string): Promise<string> {
+    const currentOwnerPhone = normalizePhoneDigits(conversation.ownerPhoneNumber);
+    if (currentOwnerPhone || !connectionPhone) {
+      return currentOwnerPhone;
+    }
+
+    const boundaryDate = getConnectionBoundaryDate(connection);
+    if (!boundaryDate) {
+      return "";
+    }
+
+    const latestMessage = await this.getLatestRealConversationMessage(conversation.id);
+    const latestAt = latestMessage?.timestamp || latestMessage?.createdAt
+      ? new Date(latestMessage.timestamp || latestMessage.createdAt)
+      : null;
+    if (!latestMessage?.fromMe || !latestAt || latestAt <= boundaryDate) {
+      return "";
+    }
+
+    await db.update(conversations)
+      .set({
+        ownerPhoneNumber: connectionPhone,
+        ownerPhoneVerifiedAt: new Date(),
+        ownerPhoneSource: "connection_runtime_after_reset",
+        updatedAt: new Date(),
+      } as any)
+      .where(eq(conversations.id, conversation.id));
+
+    conversation.ownerPhoneNumber = connectionPhone;
+    return connectionPhone;
+  }
+
+  private async ensureConversationSafeForFollowUpQueue(conversation: any, userId: string): Promise<boolean> {
+    if (!conversation?.connectionId || isGroupConversationForFollowUp(conversation)) {
+      await this.holdFollowUpOutOfQueue(conversation, FOLLOWUP_GROUP_DISABLED_REASON);
+      return false;
+    }
+
+    const connection = conversation.connection || await storage.getConnectionById(conversation.connectionId).catch(() => null);
+    if (!connection || connection.userId !== userId) {
+      await this.holdFollowUpOutOfQueue(conversation, FOLLOWUP_CONNECTION_REMOVED_REASON);
+      return false;
+    }
+
+    const status = await getGatewayStatusForConnection(connection.id);
+    const connectionPhone = getConnectionPhone(connection, status);
+    if (!gatewayStatusLooksConnected(status) && connection.isConnected !== true && String((connection as any).providerStatus || "").toLowerCase() !== "connected") {
+      await this.holdFollowUpOutOfQueue(conversation, WAITING_FOR_WHATSAPP_CONNECTION_REASON);
+      return false;
+    }
+
+    const ownerPhone = await this.tryBackfillOwnerPhoneFromCurrentConnection(conversation, connection, connectionPhone);
+    if (!ownerPhone) {
+      await this.holdFollowUpOutOfQueue(conversation, FOLLOWUP_OWNER_UNVERIFIED_REASON);
+      return false;
+    }
+
+    if (connectionPhone && ownerPhone !== connectionPhone) {
+      await this.holdFollowUpOutOfQueue(conversation, FOLLOWUP_OWNER_MISMATCH_REASON);
+      return false;
+    }
+
+    return true;
+  }
+
+  private async syncFollowUpStageFromSentLogs(conversation: any, userId: string): Promise<number> {
+    const result = await db.execute(sql`
+      SELECT MAX(stage) AS "maxStage"
+      FROM user_followup_logs
+      WHERE conversation_id = ${conversation.id}
+        AND user_id = ${userId}
+        AND status = 'sent'
+    `);
+    const maxStageValue = (result.rows || [])[0]?.maxStage;
+    const rawMaxStage = maxStageValue === null || typeof maxStageValue === "undefined" ? NaN : Number(maxStageValue);
+    if (!Number.isFinite(rawMaxStage) || rawMaxStage < 0) {
+      return Number(conversation.followupStage || 0);
+    }
+
+    const nextStage = Math.max(Number(conversation.followupStage || 0), Math.floor(rawMaxStage) + 1);
+    if (nextStage !== Number(conversation.followupStage || 0)) {
+      await db.update(conversations)
+        .set({ followupStage: nextStage, updatedAt: new Date() })
+        .where(eq(conversations.id, conversation.id));
+      conversation.followupStage = nextStage;
+    }
+    return nextStage;
+  }
+
+  private async repairMissingSchedules(limit: number = 5000, onlyUserId?: string): Promise<{ scanned: number; repaired: number; skipped: number }> {
+    const rows = await db.query.conversations.findMany({
+      where: and(
+        eq(conversations.followupActive, true),
+        isNull(conversations.nextFollowupAt)
+      ),
+      with: { connection: true },
+      limit,
+    });
+
+    let scanned = 0;
+    let repaired = 0;
+    let skipped = 0;
+
+    for (const conversation of rows) {
+      const userId = conversation.connection?.userId;
+      if (!userId || (onlyUserId && userId !== onlyUserId)) continue;
+      scanned++;
+
+      const config = await this.getFollowupConfig(userId);
+      if (!config?.isEnabled) {
+        skipped++;
+        continue;
+      }
+
+      if (!(await this.ensureConversationSafeForFollowUpQueue(conversation, userId))) {
+        skipped++;
+        continue;
+      }
+
+      const latestMessage = await this.getLatestRealConversationMessage(conversation.id);
+      if (latestMessage && !latestMessage.fromMe) {
+        await this.holdFollowUpOutOfQueue(conversation, WAITING_FOR_COMPANY_REPLY_REASON);
+        skipped++;
+        continue;
+      }
+
+      const stage = await this.syncFollowUpStageFromSentLogs(conversation, userId);
+      const intervals = config.intervalsMinutes || DEFAULT_INTERVALS;
+      const delayMinutes = intervals[stage] || intervals[intervals.length - 1] || 10;
+      const baseDate = conversation.lastMessageTime ? new Date(conversation.lastMessageTime) : new Date();
+      let nextDate = addRandomSeconds(new Date(baseDate.getTime() + delayMinutes * 60 * 1000));
+      if (nextDate <= new Date()) {
+        nextDate = addRandomSeconds(new Date(Date.now() + 60 * 1000));
+      }
+
+      await db.update(conversations)
+        .set({
+          nextFollowupAt: nextDate,
+          followupDisabledReason: null,
+          updatedAt: new Date(),
+        })
+        .where(eq(conversations.id, conversation.id));
+      repaired++;
+    }
+
+    if (scanned > 0) {
+      console.log(`[USER-FOLLOW-UP] Repair missing schedules: scanned=${scanned} repaired=${repaired} skipped=${skipped}`);
+    }
+    return { scanned, repaired, skipped };
+  }
+
   /**
    * Processa todas as conversas pendentes de follow-up
    */
@@ -262,6 +519,7 @@ export class UserFollowUpService {
       // Isso permite processar follow-ups de usuários conectados mesmo se outros não estão
       
       const now = new Date();
+      await this.repairMissingSchedules();
       
       // Buscar conversas que precisam de follow-up
       const pendingConversations = await db.query.conversations.findMany({
@@ -354,6 +612,8 @@ export class UserFollowUpService {
     }
 
     // �🚫 VERIFICAÇÃO DE SUSPENSÃO: Usuários suspensos não podem usar follow-up
+    conversation = { ...conversation, ...currentConv };
+
     const isSuspended = await checkUserSuspensionForFollowUp(userId);
     if (isSuspended) {
       console.log(`🚫 [USER-FOLLOW-UP] Usuário ${userId} está SUSPENSO - desativando follow-up da conversa`);
@@ -363,8 +623,13 @@ export class UserFollowUpService {
 
     // 🔌 VERIFICAÇÃO POR USUÁRIO: Verificar se ESTE usuário específico tem conexão ativa
     // Isso permite processar follow-ups de outros usuários mesmo se este não está conectado
+    if (!(await this.ensureConversationSafeForFollowUpQueue(conversation, userId))) {
+      return;
+    }
+    await this.syncFollowUpStageFromSentLogs(conversation, userId);
+
     const preferredConnectionId = conversation.connectionId || conversation.connection?.id;
-    if (!isUserConnectionActive(userId, preferredConnectionId)) {
+    if (!(await isUserConnectionActive(userId, preferredConnectionId))) {
       // 🔧 FIX 2026-02-25: NÃO sobrescrever nextFollowupAt se a conversa já está agendada
       // para o futuro (>10min). Isso evita que PM2 restarts destruam agendamentos corretos.
       const existingNext = conversation.nextFollowupAt ? new Date(conversation.nextFollowupAt) : null;
@@ -402,6 +667,14 @@ export class UserFollowUpService {
     
     // Marcar como em processamento
     conversationsBeingProcessed.add(conversation.id);
+
+    const latestRealMessage = await this.getLatestRealConversationMessage(conversation.id);
+    if (latestRealMessage && !latestRealMessage.fromMe) {
+      await this.holdFollowUpOutOfQueue(conversation, WAITING_FOR_COMPANY_REPLY_REASON);
+      await this.logFollowUp(conversation, userId, 'skipped', null, { action: 'wait', reason: WAITING_FOR_COMPANY_REPLY_REASON }, WAITING_FOR_COMPANY_REPLY_REASON);
+      conversationsBeingProcessed.delete(conversation.id);
+      return;
+    }
 
     console.log(`👉 [USER-FOLLOW-UP] Processando ${conversation.contactNumber} (Estágio ${conversation.followupStage})`);
 
@@ -1660,12 +1933,11 @@ ${conversedToday ? '- NUNCA use "Oi", "Olá", "Bom dia/tarde/noite" - JÁ CONVER
       return { reorganized: 0, skipped: 0 };
     }
 
+    await this.repairMissingSchedules(50000, userId);
+
     // Buscar todas as conversas com follow-up ativo
     const pendingConversations = await db.query.conversations.findMany({
-      where: and(
-        eq(conversations.followupActive, true),
-        isNotNull(conversations.nextFollowupAt)
-      ),
+      where: eq(conversations.followupActive, true),
       with: {
         connection: true
       }
@@ -1681,12 +1953,24 @@ ${conversedToday ? '- NUNCA use "Oi", "Olá", "Bom dia/tarde/noite" - JÁ CONVER
 
     for (const conversation of userConversations) {
       try {
-        const stage = conversation.followupStage || 0;
+        if (!(await this.ensureConversationSafeForFollowUpQueue(conversation, userId))) {
+          skipped++;
+          continue;
+        }
+
+        const latestMessage = await this.getLatestRealConversationMessage(conversation.id);
+        if (latestMessage && !latestMessage.fromMe) {
+          await this.holdFollowUpOutOfQueue(conversation, WAITING_FOR_COMPANY_REPLY_REASON);
+          skipped++;
+          continue;
+        }
+
+        const stage = await this.syncFollowUpStageFromSentLogs(conversation, userId);
         const delayMinutes = intervals[stage] || intervals[intervals.length - 1] || 10;
         
-        // Calcular nova data baseada em lastMessageAt ou now
-        const baseDate = conversation.lastMessageAt 
-          ? new Date(conversation.lastMessageAt) 
+        // Calcular nova data baseada em lastMessageTime ou now
+        const baseDate = conversation.lastMessageTime 
+          ? new Date(conversation.lastMessageTime) 
           : now;
         
         let newDate = new Date(baseDate.getTime() + delayMinutes * 60 * 1000);
@@ -1754,6 +2038,89 @@ ${conversedToday ? '- NUNCA use "Oi", "Olá", "Bom dia/tarde/noite" - JÁ CONVER
    */
   async clearConnectionWaitingStatus(connectionId: string): Promise<number> {
     try {
+      {
+        const connection = await storage.getConnectionById(connectionId).catch(() => null);
+        const status = await getGatewayStatusForConnection(connectionId);
+        const connectionPhone = getConnectionPhone(connection, status);
+
+        if (!connection || !connectionPhone) {
+          return 0;
+        }
+
+        const nextDate = addRandomSeconds(new Date(Date.now() + 2 * 60 * 1000));
+        const futureThreshold = new Date(Date.now() + 10 * 60 * 1000);
+
+        await db.execute(sql`
+          UPDATE conversations
+          SET next_followup_at = NULL,
+              followup_disabled_reason = ${FOLLOWUP_OWNER_UNVERIFIED_REASON},
+              updated_at = NOW()
+          WHERE connection_id = ${connectionId}
+            AND followup_active = TRUE
+            AND (
+              owner_phone_number IS NULL
+              OR regexp_replace(owner_phone_number, '\\D', '', 'g') = ''
+            )
+            AND (
+              followup_disabled_reason = ${WAITING_FOR_WHATSAPP_CONNECTION_REASON}
+              OR followup_disabled_reason ILIKE '%Aguardando%conex%'
+            )
+        `);
+
+        await db.execute(sql`
+          UPDATE conversations
+          SET next_followup_at = NULL,
+              followup_disabled_reason = ${FOLLOWUP_OWNER_MISMATCH_REASON},
+              updated_at = NOW()
+          WHERE connection_id = ${connectionId}
+            AND followup_active = TRUE
+            AND owner_phone_number IS NOT NULL
+            AND regexp_replace(owner_phone_number, '\\D', '', 'g') <> ${connectionPhone}
+            AND (
+              followup_disabled_reason = ${WAITING_FOR_WHATSAPP_CONNECTION_REASON}
+              OR followup_disabled_reason ILIKE '%Aguardando%conex%'
+            )
+        `);
+
+        const result = await db.execute(sql`
+          UPDATE conversations
+          SET next_followup_at = ${nextDate},
+              followup_disabled_reason = NULL,
+              updated_at = NOW()
+          WHERE connection_id = ${connectionId}
+            AND followup_active = TRUE
+            AND owner_phone_number IS NOT NULL
+            AND regexp_replace(owner_phone_number, '\\D', '', 'g') = ${connectionPhone}
+            AND (
+              followup_disabled_reason = ${WAITING_FOR_WHATSAPP_CONNECTION_REASON}
+              OR followup_disabled_reason ILIKE '%Aguardando%conex%'
+            )
+            AND (next_followup_at IS NULL OR next_followup_at <= ${futureThreshold})
+          RETURNING id
+        `);
+
+        await db.execute(sql`
+          UPDATE conversations
+          SET followup_disabled_reason = NULL,
+              updated_at = NOW()
+          WHERE connection_id = ${connectionId}
+            AND followup_active = TRUE
+            AND owner_phone_number IS NOT NULL
+            AND regexp_replace(owner_phone_number, '\\D', '', 'g') = ${connectionPhone}
+            AND (
+              followup_disabled_reason = ${WAITING_FOR_WHATSAPP_CONNECTION_REASON}
+              OR followup_disabled_reason ILIKE '%Aguardando%conex%'
+            )
+            AND next_followup_at > ${futureThreshold}
+        `);
+
+        const count = result.rowCount || (result.rows || []).length || 0;
+        if (count > 0) {
+          console.log(`[USER-FOLLOW-UP] ${count} conversas reativadas para conexao ${connectionId} com owner_phone conferido`);
+        }
+        return count;
+      }
+
       // Reagendar para 2 minutos no futuro
       const nextDate = addRandomSeconds(new Date(Date.now() + 2 * 60 * 1000));
       

@@ -152,6 +152,9 @@ export const whatsappConnections = pgTable("whatsapp_connections", {
   isConnected: boolean("is_connected").default(false).notNull(),
   qrCode: text("qr_code"),
   sessionData: jsonb("session_data"),
+  provider: varchar("provider", { length: 50 }).default("baileys").notNull(),
+  connectionMethod: varchar("connection_method", { length: 50 }).default("qr").notNull(),
+  providerStatus: varchar("provider_status", { length: 50 }).default("inactive").notNull(),
   // 🛡️ SAFE MODE: Modo seguro anti-bloqueio
   // Quando ativado pelo admin, ao reconectar via QR Code:
   // 1. Zera todos os follow-ups pendentes
@@ -266,6 +269,9 @@ export const conversations = pgTable("conversations", {
   followupStage: integer("followup_stage").default(0).notNull(),
   nextFollowupAt: timestamp("next_followup_at"),
   followupDisabledReason: text("followup_disabled_reason"),
+  ownerPhoneNumber: text("owner_phone_number"),
+  ownerPhoneVerifiedAt: timestamp("owner_phone_verified_at"),
+  ownerPhoneSource: text("owner_phone_source"),
   // Token único para compartilhar conversa via URL
   shareToken: varchar("share_token", { length: 64 }).unique(),
   // CRM Kanban

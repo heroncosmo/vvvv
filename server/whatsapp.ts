@@ -7634,8 +7634,16 @@ export async function sendMessage(
   userId: string, 
   conversationId: string, 
   text: string,
-  options?: { isFromAgent?: boolean; source?: "owner" | "agent" | "followup" | "system" }
-): Promise<void> {
+  options?: {
+    isFromAgent?: boolean;
+    source?: "owner" | "agent" | "followup" | "system";
+    validateDestination?: boolean;
+    acceptQueued?: boolean;
+    bypassDeduplication?: boolean;
+    clientMessageId?: string | null;
+    existingMessageDbId?: string | null;
+  }
+): Promise<{ success: boolean; messageId?: string; reason?: string; blocked?: boolean }> {
   const conversation = await storage.getConversation(conversationId);
   if (!conversation) {
     throw new Error("Conversation not found");
@@ -7647,9 +7655,78 @@ export async function sendMessage(
     throw new Error("Unauthorized access to conversation");
   }
 
+  const messageSource = options?.source ?? (options?.isFromAgent ? "agent" : "owner");
+  const gatewayBaseUrl = String(process.env.WA_GATEWAY_URL || "").trim().replace(/\/+$/, "");
+
   // Multi-connection strict mode: conversation must send only through its own connection
   const session = sessions.get(conversation.connectionId);
   if (!session?.socket) {
+    if (gatewayBaseUrl) {
+      const token = String(process.env.WA_GATEWAY_INTERNAL_TOKEN || "agentezap-internal-wa-gateway").trim();
+      const connectionPhone = cleanContactNumber(connection.phoneNumber || "");
+
+      if (connectionPhone && !cleanContactNumber((conversation as any).ownerPhoneNumber || "")) {
+        await db.update(conversations)
+          .set({
+            ownerPhoneNumber: connectionPhone,
+            ownerPhoneVerifiedAt: new Date(),
+            ownerPhoneSource: "outbound_send",
+            updatedAt: new Date(),
+          } as any)
+          .where(eq(conversations.id, conversationId));
+      }
+
+      const response = await fetch(`${gatewayBaseUrl}/api/integration/instances/${conversation.connectionId}/messages/send`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-wa-gateway-token": token,
+        },
+        body: JSON.stringify({
+          conversationId,
+          text,
+          to: conversation.contactNumber,
+          contactName: conversation.contactName,
+          validateDestination: options?.validateDestination === true,
+          acceptQueued: options?.acceptQueued === true,
+          isFromAgent: options?.isFromAgent === true,
+          source: messageSource,
+          bypassDeduplication: options?.bypassDeduplication === true,
+          clientMessageId: options?.clientMessageId || undefined,
+          existingMessageDbId: options?.existingMessageDbId || undefined,
+        }),
+      });
+      const bodyText = await response.text();
+      let payload: any = null;
+      try {
+        payload = bodyText ? JSON.parse(bodyText) : null;
+      } catch {
+        payload = { reason: bodyText };
+      }
+
+      if (!response.ok || payload?.success === false) {
+        return {
+          success: false,
+          reason: payload?.reason || payload?.message || `Gateway send failed (${response.status})`,
+          blocked: payload?.blocked === true,
+        };
+      }
+
+      if (messageSource !== "followup") {
+        try {
+          await userFollowUpService.resetFollowUpCycle(conversationId, "Empresa respondeu");
+        } catch (error) {
+          console.error("Erro ao reiniciar follow-up do usuario:", error);
+        }
+      }
+
+      return {
+        success: true,
+        messageId: payload?.messageId || undefined,
+        reason: payload?.reason || undefined,
+        blocked: payload?.blocked === true,
+      };
+    }
     throw new Error("WhatsApp not connected for this connection");
   }
 
@@ -7658,12 +7735,10 @@ export async function sendMessage(
     if (isRecentDuplicate(conversationId, text)) {
       console.log(`?? [sendMessage] Mensagem IDENTICA ja enviada recentemente, IGNORANDO duplicata`);
       console.log(`   Texto: "${text.substring(0, 80)}..."`);
-      return;
+      return { success: false, blocked: true, reason: "Mensagem duplicada recente" };
     }
     registerSentMessageCache(conversationId, text);
   }
-
-  const messageSource = options?.source ?? (options?.isFromAgent ? "agent" : "owner");
 
   // Usar remoteJid normalizado do banco (suporta @lid, @s.whatsapp.net, etc)
   const jid = buildSendJid(conversation);
@@ -7680,7 +7755,7 @@ export async function sendMessage(
   // Se a fila bloqueou por dedupe, nada foi enviado. Nao persistir e nem disparar side-effects.
   if (queueResult.messageId === "DEDUPLICATED_BLOCKED") {
     console.log(`?? [sendMessage] Dedupe bloqueou envio. Ignorando persistencia/side-effects.`);
-    return;
+    return { success: false, blocked: true, reason: "Mensagem bloqueada por deduplicacao" };
   }
 
   const messageId = queueResult.messageId || Date.now().toString();
@@ -7705,7 +7780,7 @@ export async function sendMessage(
   // Caso contrario, o follow-up reativa a si mesmo e entra em loop.
   if (messageSource != "followup") {
     try {
-      await userFollowUpService.enableFollowUp(conversationId);
+      await userFollowUpService.resetFollowUpCycle(conversationId, "Empresa respondeu");
     } catch (error) {
       console.error("Erro ao ativar follow-up do usuario:", error);
     }
@@ -7744,6 +7819,8 @@ export async function sendMessage(
       lastMessageFromMe: true,
     },
   });
+
+  return { success: true, messageId };
 }
 
 export async function sendAdminConversationMessage(adminId: string, conversationId: string, text: string): Promise<void> {

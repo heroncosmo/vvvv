@@ -1154,7 +1154,16 @@ Sitemap: https://agentezap.online/sitemap.xml
 
       // saiba que foi ela quem enviou quando retomar a conversa apÃ³s o cliente responder
 
-      await whatsappSendMessage(userId, conversationId, message, { isFromAgent: true, source: "followup" });
+      const sendResult = await whatsappSendMessage(userId, conversationId, message, {
+        isFromAgent: true,
+        source: "followup",
+        validateDestination: true,
+        acceptQueued: true,
+      });
+
+      if (sendResult?.success === false) {
+        return { success: false, error: sendResult.reason || "Envio bloqueado" };
+      }
 
       console.log(`? [FOLLOW-UP-CALLBACK] Mensagem enviada com sucesso para ${phoneNumber}`);
 
