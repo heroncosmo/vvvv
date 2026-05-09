@@ -9590,7 +9590,6 @@ function buildWebOnlyCatalogMediaTurnText(params: { catalogMediaActions: any[] }
 function ensureWebOnlyCatalogMediaTextMentionsSelectedThemes(text: string, catalogMediaActions: any[]): string {
   if (!Array.isArray(catalogMediaActions) || catalogMediaActions.length === 0) return text;
   const labels = getWebOnlyCatalogThemeLabelsFromActions(catalogMediaActions);
-  if (labels.length === 0) return text;
   const normalizedText = normalizeWebOnlyCatalogText(text);
   const firstTextBlock = normalizeWebOnlyCatalogText(String(text || "").slice(0, 240));
   const expectedGreeting = normalizeWebOnlyCatalogText(getWebOnlyBrazilGreeting());
@@ -9598,6 +9597,12 @@ function ensureWebOnlyCatalogMediaTextMentionsSelectedThemes(text: string, catal
   const asksForCatalogSelectionAlreadyResolved =
     /\bqual(?:\s+del[ae]s|\s+linha|\s+modelo|\s+tema|\s+cat[aá]logo)\b/i.test(normalizedText) ||
     /\b(?:linha|modelo|tema|cat[aá]logo)\b[\s\S]{0,80}\b(?:interesse|prefere|escolheu|escolhido)\b/i.test(normalizedText);
+  if (labels.length === 0) {
+    return asksForCatalogSelectionAlreadyResolved ||
+      /\b(?:aguardando resposta do sistema|vou verificar no sistema)\b/i.test(normalizedText)
+      ? buildWebOnlyCatalogMediaTurnText({ catalogMediaActions })
+      : text;
+  }
   const missing = labels.filter((label) => {
     const tokens = getWebOnlyCatalogMessageTokens(label);
     return tokens.length > 0 && !tokens.some((token) => normalizedText.includes(token));
