@@ -176,6 +176,7 @@ interface CampaignHistory {
 }
 
 const BRAZIL_TIME_ZONE = "America/Sao_Paulo";
+const GROUP_CONNECTION_ALL_VALUE = "__all_connections__";
 const BRAZIL_UTC_OFFSET = "-03:00";
 const BROADCAST_DELAY_MIN_MS = 60_000;
 const BROADCAST_DELAY_MAX_MS = 300_000;
@@ -409,6 +410,7 @@ export default function MassSendPage() {
   const [broadcastConnectionMode, setBroadcastConnectionMode] = useState<'single' | 'rotate'>('single');
   const [selectedBroadcastConnectionId, setSelectedBroadcastConnectionId] = useState("");
   const [selectedRotationConnectionIds, setSelectedRotationConnectionIds] = useState<Set<string>>(new Set());
+  const [selectedGroupConnectionScope, setSelectedGroupConnectionScope] = useState(GROUP_CONNECTION_ALL_VALUE);
   const [inboundGateEnabled, setInboundGateEnabled] = useState(true);
   const [businessHoursEnabled, setBusinessHoursEnabled] = useState(true);
   const [activeCampaignId, setActiveCampaignId] = useState<string | null>(null);
@@ -509,14 +511,15 @@ export default function MassSendPage() {
   );
 
   const activeGroupsConnectionId = useMemo(
-    () => selectedBroadcastConnectionId || connectedBroadcastConnections[0]?.id || connection?.id || "",
-    [selectedBroadcastConnectionId, connectedBroadcastConnections, connection?.id],
+    () => (selectedGroupConnectionScope === GROUP_CONNECTION_ALL_VALUE ? "" : selectedGroupConnectionScope),
+    [selectedGroupConnectionScope],
   );
 
   useEffect(() => {
     if (connectedBroadcastConnections.length === 0) {
       setSelectedBroadcastConnectionId("");
       setSelectedRotationConnectionIds(new Set());
+      setSelectedGroupConnectionScope(GROUP_CONNECTION_ALL_VALUE);
       return;
     }
 
@@ -524,6 +527,15 @@ export default function MassSendPage() {
       setSelectedBroadcastConnectionId(connectedBroadcastConnections[0].id);
     }
   }, [connectedBroadcastConnections, selectedBroadcastConnectionId]);
+
+  useEffect(() => {
+    if (
+      selectedGroupConnectionScope !== GROUP_CONNECTION_ALL_VALUE &&
+      !connectedBroadcastConnections.some((item) => item.id === selectedGroupConnectionScope)
+    ) {
+      setSelectedGroupConnectionScope(GROUP_CONNECTION_ALL_VALUE);
+    }
+  }, [connectedBroadcastConnections, selectedGroupConnectionScope]);
 
   useEffect(() => {
     if (broadcastConnectionMode !== "rotate") {
@@ -599,10 +611,10 @@ export default function MassSendPage() {
   const syncedContacts = syncedContactsData?.contacts || [];
 
   // Buscar grupos do WhatsApp
-  const groupsQueryEnabled = recipientMode === 'groups' && Boolean(activeGroupsConnectionId);
+  const groupsQueryEnabled = recipientMode === 'groups' && connectedBroadcastConnections.length > 0;
   const groupsQueryScope = useMemo(
-    () => activeGroupsConnectionId || "none",
-    [activeGroupsConnectionId],
+    () => selectedGroupConnectionScope,
+    [selectedGroupConnectionScope],
   );
 
   const {
@@ -1447,7 +1459,7 @@ export default function MassSendPage() {
   };
   const isConnected = connectedBroadcastConnections.length > 0 || connection?.isConnected;
   const hasValidConnectionSelection = recipientMode === 'groups'
-    ? Boolean(activeGroupsConnectionId)
+    ? connectedBroadcastConnections.length > 0
     : broadcastConnectionMode === 'rotate'
       ? selectedRotationConnectionIds.size >= 2
       : Boolean(selectedBroadcastConnectionId || connection?.isConnected);
@@ -2014,11 +2026,14 @@ Pedro Oliveira, 31988776655`}
                         </AlertDescription>
                       </Alert>
                     ) : (
-                      <Select value={activeGroupsConnectionId} onValueChange={setSelectedBroadcastConnectionId}>
+                      <Select value={selectedGroupConnectionScope} onValueChange={setSelectedGroupConnectionScope}>
                         <SelectTrigger>
                           <SelectValue placeholder="Selecione uma conexao" />
                         </SelectTrigger>
                         <SelectContent>
+                          <SelectItem value={GROUP_CONNECTION_ALL_VALUE}>
+                            Todas as conexoes conectadas
+                          </SelectItem>
                           {connectedBroadcastConnections.map((item) => (
                             <SelectItem key={item.id} value={item.id}>
                               {formatBroadcastConnectionLabel(item)}
@@ -2028,7 +2043,7 @@ Pedro Oliveira, 31988776655`}
                       </Select>
                     )}
                     <p className="text-xs text-muted-foreground">
-                      A lista abaixo mostra apenas os grupos da conexao escolhida.
+                      A lista abaixo mostra todos os grupos conectados. Use o filtro se quiser enviar por uma linha especifica.
                     </p>
                   </div>
 
