@@ -5,6 +5,7 @@ import {
   triggerStatefulJobCronGroup,
 } from "./statefulJobCron";
 import {
+  delegateToVercelHttpHandler,
   handleWithVercelHttpParity,
   isVercelHttpParityEnabled,
 } from "./vercelHttpParity";
@@ -139,7 +140,17 @@ async function delegateVercelOnlyCron(req: Request, res: Response, next: NextFun
   return handleWithVercelHttpParity(req, res, next);
 }
 
+async function delegateBuiltInVercelCron(req: Request, res: Response, next: NextFunction) {
+  if (!requireCronMethod(req, res) || !requireCronAuth(req, res)) {
+    return;
+  }
+
+  return delegateToVercelHttpHandler(req, res, next);
+}
+
 export function registerVpsCronRoutes(app: Express) {
+  app.all("/api/cron/stateful-jobs/lead-sync", delegateBuiltInVercelCron);
+
   app.all("/api/cron/stateful-jobs/:groupId", (req: Request, res: Response) => {
     void dispatchCronGroup(req, res, String(req.params.groupId || "").trim());
   });

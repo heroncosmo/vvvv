@@ -1,4 +1,4 @@
-import { and, eq, isNotNull } from "drizzle-orm";
+import { and, eq, isNotNull, sql } from "drizzle-orm";
 
 import { db } from "./db";
 import { syncMatonLeadEmailsForIntegration } from "./routes_grupo_olx";
@@ -48,6 +48,7 @@ export async function runGrupoOlxLeadSyncCycle() {
           isNotNull(grupoOlxIntegrations.matonApiKey),
           isNotNull(grupoOlxIntegrations.matonConnectionId),
           isNotNull(grupoOlxIntegrations.connectionId),
+          sql`google_access_token IS NULL AND google_refresh_token IS NULL`,
         ),
       );
 

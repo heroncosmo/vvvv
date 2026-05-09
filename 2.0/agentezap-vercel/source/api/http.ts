@@ -32476,6 +32476,14 @@ function isGrupoOlxVagueOnSiteListingRequest(value: unknown): boolean {
   return mentionsBeingThere && mentionsOnSiteSignal && asksForInfo;
 }
 
+function isGrupoOlxListingFollowUpIntent(value: unknown): boolean {
+  const normalized = grupoOlxNormalizeText(value);
+  if (!normalized) return false;
+
+  return /\b(esse|essa|nesse|nessa|neste|nesta|desse|dessa)\s+imovel\b/.test(normalized) ||
+    /\b(agendar|agenda|marcar|visita|disponibilidade|disponivel|detalhes|link|anuncio|valor|preco|fotos|comprar|alugar)\b/.test(normalized);
+}
+
 function extractGrupoOlxSearchTermsPrioritized(
   message: string,
   history: Array<{ role: "user" | "assistant"; content: string }>,
@@ -32491,6 +32499,17 @@ function extractGrupoOlxSearchTermsPrioritized(
     .filter(Boolean);
   if (recentUserMessages.length) {
     buckets.push(extractGrupoOlxMeaningfulSearchTerms(recentUserMessages.join("\n"), limit));
+  }
+
+  if (isGrupoOlxListingFollowUpIntent(message)) {
+    const recentAssistantMessages = history
+      .filter((entry) => entry.role === "assistant")
+      .slice(-2)
+      .map((entry) => entry.content)
+      .filter(Boolean);
+    if (recentAssistantMessages.length) {
+      buckets.push(extractGrupoOlxMeaningfulSearchTerms(recentAssistantMessages.join("\n"), limit));
+    }
   }
 
   const terms: string[] = [];
@@ -32517,7 +32536,8 @@ function buildGrupoOlxCatalogSearchContext(
     .slice(-2)
     .map((entry) => entry.content)
     .join("\n");
-  const searchText = [message, recentUserText].filter(Boolean).join("\n");
+  const shouldUseAssistantAnchor = isGrupoOlxListingFollowUpIntent(message);
+  const searchText = [message, recentUserText, shouldUseAssistantAnchor ? recentAssistantText : ""].filter(Boolean).join("\n");
   const intentText = [message, recentUserText, recentAssistantText].filter(Boolean).join("\n");
   const terms = extractGrupoOlxSearchTermsPrioritized(message, history, 18);
   const codes = extractGrupoOlxListingCodesFromText(searchText);
@@ -32546,6 +32566,7 @@ function isGrupoOlxCatalogIntentFromContext(
   if (isGrupoOlxCatalogIntentMessage(message)) return true;
   const context = buildGrupoOlxCatalogSearchContext(message, history);
   if (isGrupoOlxCatalogIntentMessage(context.searchText)) return true;
+  if (isGrupoOlxListingFollowUpIntent(message) && isGrupoOlxCatalogIntentMessage(context.intentText)) return true;
   return context.assistantAskedForAddress && context.terms.some((term) => /^\d{1,6}$/.test(term));
 }
 
@@ -34450,9 +34471,11 @@ async function runWebOnlyGrupoOlxAgenticCatalogResponse(params: {
     "Se o cliente mandar endereco com rua/avenida e numero, so confirme correspondencia quando o candidato tiver a mesma rua/avenida e numero ou uma evidencia equivalente no endereco.",
     "Nao exija virgula entre rua e numero. Exemplos equivalentes: 'Avenida Afonso Pena 675', 'Avenida Afonso Pena, 675', 'Av Afonso Pena 675'.",
     "Em busca por endereco exato, nao trate imovel parecido, mesma cidade ou mesma rua com outro numero como disponivel. Se nao bater rua/avenida, numero e cidade quando informada, action deve ser not_found.",
+    "Se o historico recente do agente ja confirmou um imovel do catalogo e a mensagem atual pedir agendar visita, disponibilidade, link, detalhes, valor ou falar 'nesse imovel', mantenha esse imovel ancorado e retorne action answer usando o candidato confirmado.",
     "Quando action for answer, responda com as informacoes do imovel encontrado: titulo/tipo, endereco, bairro/cidade, preco, caracteristicas e link se existir.",
     "Quando action for answer, nao diga que vai encaminhar a solicitacao para um corretor, nao diga que um corretor vai verificar e nao trate como indisponivel.",
-    "So ofereca encaminhar para um corretor quando action for not_found ou quando o cliente pedir explicitamente atendimento humano, visita ou contato de corretor.",
+    "Se o cliente pedir visita para um imovel confirmado, responda com o imovel confirmado e diga que pode seguir com o agendamento/encaminhar ao corretor responsavel. Nao transforme isso em not_found.",
+    "So ofereca encaminhar para um corretor sem dados do imovel quando action for not_found ou quando o cliente pedir explicitamente atendimento humano sem haver imovel confirmado.",
     "Se nao houver correspondencia suficiente, responda que nao encontrou esse imovel no catalogo atual e ofereca encaminhar para um corretor verificar, sem sugerir outro imovel como substituto.",
     "Se a mensagem nao for consulta imobiliaria, retorne action pass.",
     "Retorne APENAS JSON puro no formato {\"action\":\"answer|not_found|pass\",\"response\":\"texto para WhatsApp\",\"matchedListingCodes\":[\"COD\"],\"confidence\":0.0,\"reason\":\"motivo curto\"}.",

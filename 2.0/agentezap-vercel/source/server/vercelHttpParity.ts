@@ -106,6 +106,8 @@ export function registerVercelHttpParityRoutes(app: Express) {
   app.all("/api/google-calendar/check-availability", delegateToVercelHttpHandler);
   app.all("/api/google-calendar/sync-appointment/:appointmentId", delegateToVercelHttpHandler);
   app.all("/api/google-calendar/event/:eventId", delegateToVercelHttpHandler);
+  app.all("/api/integrations/grupo-olx", delegateToVercelHttpHandler);
+  app.all("/api/integrations/grupo-olx/*", delegateToVercelHttpHandler);
 }
 
 export function registerVercelHttpFallbackRoutes(app: Express) {

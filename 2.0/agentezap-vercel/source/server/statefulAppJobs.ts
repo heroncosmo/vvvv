@@ -283,10 +283,20 @@ const STATEFUL_JOB_DEFINITIONS: Record<string, StatefulJobDefinition> = {
     description: "Roda um ciclo unico de sincronizacao automatica dos leads da imobiliaria.",
     requiresStatefulRuntime: false,
     run: async () => {
+      const delegated = await runVpsCronHttpPath("/api/cron/stateful-jobs/lead-sync", "stateful-job:grupo-olx-lead-sync");
+      if (
+        delegated.accepted ||
+        !["missing_vps_cron_target_base_url", "missing_vps_cron_token"].includes(String(delegated.skipped || ""))
+      ) {
+        return delegated;
+      }
+
       await runGrupoOlxLeadSyncCycle();
       return {
         accepted: true,
-        details: null,
+        details: {
+          fallback: "legacy_maton_without_direct_google",
+        },
       };
     },
   },
