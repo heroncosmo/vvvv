@@ -12543,6 +12543,35 @@ async function runWebOnlyAgentTestForUser(userId: string, body: any) {
     };
   }
 
+  const agendamento3AgentResponse = await runAgendamento3AgentForUser({
+    userId,
+    message,
+    history: conversationHistory,
+    contactName,
+    contactPhone: body.contactPhone || body.contactNumber || body.phone || null,
+    conversationId: body.conversationId || body.conversationKey || body.testConversationKey || null,
+    commit: body.agendamento3Commit === true || body.commitScheduling === true,
+  }).catch((error: any) => {
+    console.error("[vercel-http] Agendamento 3.0 agent failed:", error);
+    return null;
+  });
+  if (agendamento3AgentResponse?.handled) {
+    const splitResponses = applyWebOnlyTextSettings(agendamento3AgentResponse.response, config);
+    return {
+      status: 200,
+      payload: {
+        response: splitResponses.join("\n\n"),
+        splitResponses,
+        mediaActions: [],
+        audioResponseMode: "text",
+        wouldSendAudio: false,
+        wouldSendText: splitResponses.length > 0,
+        mode: "agendamento3",
+        agendamento3: agendamento3AgentResponse,
+      },
+    };
+  }
+
   if (hasWebOnlyPriorAssistantMessage(conversationHistory) && hasWebOnlyCustomerRepetitionComplaint(message)) {
     const splitResponses = applyWebOnlyTextSettings(buildWebOnlyCustomerRepetitionComplaintText(), config);
     return {
@@ -12663,35 +12692,6 @@ async function runWebOnlyAgentTestForUser(userId: string, body: any) {
         wouldSendText: splitResponses.length > 0,
         mode: "web_catalog_selection",
         catalogSelectionCount: (recognizedCatalogSelectionResponse.match(/^Item\s+\d+/gmi) || []).length,
-      },
-    };
-  }
-
-  const agendamento3AgentResponse = await runAgendamento3AgentForUser({
-    userId,
-    message,
-    history: conversationHistory,
-    contactName,
-    contactPhone: body.contactPhone || body.contactNumber || body.phone || null,
-    conversationId: body.conversationId || body.conversationKey || body.testConversationKey || null,
-    commit: body.agendamento3Commit === true || body.commitScheduling === true,
-  }).catch((error: any) => {
-    console.error("[vercel-http] Agendamento 3.0 agent failed:", error);
-    return null;
-  });
-  if (agendamento3AgentResponse?.handled) {
-    const splitResponses = applyWebOnlyTextSettings(agendamento3AgentResponse.response, config);
-    return {
-      status: 200,
-      payload: {
-        response: splitResponses.join("\n\n"),
-        splitResponses,
-        mediaActions: [],
-        audioResponseMode: "text",
-        wouldSendAudio: false,
-        wouldSendText: splitResponses.length > 0,
-        mode: "agendamento3",
-        agendamento3: agendamento3AgentResponse,
       },
     };
   }
@@ -31815,7 +31815,7 @@ async function runAgendamento3AgentForUser(input: {
   }
 
   if (!plan.date || !plan.time) {
-    const missingText = !plan.date && !plan.time ? "o dia e o horario" : !plan.date ? "o dia" : "o horario";
+    const missingText = !plan.date && !plan.time ? "o dia e o horário" : !plan.date ? "o dia" : "o horário";
     return {
       handled: true,
       response: `Para consultar a agenda corretamente, preciso de ${missingText}. Qual prefere?`,

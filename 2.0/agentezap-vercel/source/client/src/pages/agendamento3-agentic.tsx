@@ -169,6 +169,22 @@ function formatAppointmentDate(date?: string | null, time?: string | null) {
   return `${day}/${month}/${year}${time ? ` ${String(time).slice(0, 5)}` : ""}`;
 }
 
+function formatAppointmentTimeRange(date?: string | null, startTime?: string | null, endTime?: string | null) {
+  const start = formatAppointmentDate(date, startTime);
+  return endTime ? `${start} - ${String(endTime).slice(0, 5)}` : start;
+}
+
+function formatAppointmentStatus(status?: string | null) {
+  if (!status) return "Pendente";
+  const labels: Record<string, string> = {
+    pending: "Pendente",
+    confirmed: "Confirmado",
+    cancelled: "Cancelado",
+    completed: "Concluído",
+  };
+  return labels[status] || status;
+}
+
 function buildEmptyReminderItem(index: number): Agendamento2ReminderFlowItem {
   return {
     id: `agendamento3-reminder-${Date.now()}-${index}`,
@@ -189,6 +205,7 @@ export default function Agendamento3AgenticPage() {
   const [customStartDate, setCustomStartDate] = useState("");
   const [customEndDate, setCustomEndDate] = useState("");
   const [selectedDayKey, setSelectedDayKey] = useState<string | null>(null);
+  const [expandedAppointmentId, setExpandedAppointmentId] = useState<string | null>(null);
   const [reminderEnabled, setReminderEnabled] = useState(false);
   const [reminderFlowItems, setReminderFlowItems] = useState<Agendamento2ReminderFlowItem[]>(
     getDefaultAgendamento2ReminderFlowItems(),
@@ -742,18 +759,60 @@ export default function Agendamento3AgenticPage() {
                       </div>
                       <Badge variant="outline" className="bg-white">{group.count} agendamento(s)</Badge>
                     </div>
-                    {group.items.map((appointment) => (
-                      <div key={appointment.id} className="grid gap-2 border-b p-3 last:border-b-0 md:grid-cols-[1fr_160px_120px] md:items-center">
-                        <div>
-                          <p className="text-sm font-medium text-slate-900">{appointment.client_name || "Cliente"}</p>
-                          <p className="text-xs text-slate-500">{appointment.service_name || "Atendimento"} {appointment.client_phone ? `- ${appointment.client_phone}` : ""}</p>
+                    {group.items.map((appointment) => {
+                      const expanded = expandedAppointmentId === appointment.id;
+                      return (
+                        <div key={appointment.id} className="border-b last:border-b-0">
+                          <button
+                            type="button"
+                            aria-expanded={expanded}
+                            onClick={() => setExpandedAppointmentId(expanded ? null : appointment.id)}
+                            className="grid w-full gap-2 p-3 text-left transition hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300 md:grid-cols-[1fr_160px_120px] md:items-center"
+                          >
+                            <div>
+                              <p className="text-sm font-medium text-slate-900">{appointment.client_name || "Cliente"}</p>
+                              <p className="text-xs text-slate-500">{appointment.service_name || "Atendimento"} {appointment.client_phone ? `- ${appointment.client_phone}` : ""}</p>
+                            </div>
+                            <p className="text-sm text-slate-700">{formatAppointmentDate(appointment.appointment_date, appointment.start_time)}</p>
+                            <span className={`inline-flex w-fit items-center rounded-md border px-2.5 py-0.5 text-xs font-semibold ${
+                              appointment.google_calendar_synced
+                                ? "border-transparent bg-primary text-primary-foreground"
+                                : "border-slate-200 bg-white text-slate-700"
+                            }`}>
+                              {appointment.google_calendar_synced ? "Google OK" : formatAppointmentStatus(appointment.status)}
+                            </span>
+                          </button>
+                          {expanded ? (
+                            <div className="grid gap-3 border-t bg-slate-50 px-4 py-3 text-sm text-slate-700 sm:grid-cols-2 lg:grid-cols-3">
+                              <div>
+                                <p className="text-xs font-medium uppercase text-slate-500">Cliente</p>
+                                <p className="mt-1 font-medium text-slate-900">{appointment.client_name || "Cliente sem nome"}</p>
+                              </div>
+                              <div>
+                                <p className="text-xs font-medium uppercase text-slate-500">Telefone</p>
+                                <p className="mt-1">{appointment.client_phone || "Sem telefone salvo"}</p>
+                              </div>
+                              <div>
+                                <p className="text-xs font-medium uppercase text-slate-500">Serviço</p>
+                                <p className="mt-1">{appointment.service_name || "Atendimento"}</p>
+                              </div>
+                              <div>
+                                <p className="text-xs font-medium uppercase text-slate-500">Data e horário</p>
+                                <p className="mt-1">{formatAppointmentTimeRange(appointment.appointment_date, appointment.start_time, appointment.end_time)}</p>
+                              </div>
+                              <div>
+                                <p className="text-xs font-medium uppercase text-slate-500">Status</p>
+                                <p className="mt-1">{formatAppointmentStatus(appointment.status)}</p>
+                              </div>
+                              <div>
+                                <p className="text-xs font-medium uppercase text-slate-500">Google Calendar</p>
+                                <p className="mt-1">{appointment.google_calendar_synced ? "Sincronizado" : "Ainda não sincronizado"}</p>
+                              </div>
+                            </div>
+                          ) : null}
                         </div>
-                        <p className="text-sm text-slate-700">{formatAppointmentDate(appointment.appointment_date, appointment.start_time)}</p>
-                        <Badge variant={appointment.google_calendar_synced ? "default" : "outline"}>
-                          {appointment.google_calendar_synced ? "Google OK" : appointment.status || "pendente"}
-                        </Badge>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 ))}
               </div>
