@@ -9208,6 +9208,7 @@ function isWebOnlyLooseCatalogCodeCandidate(normalizedText: string, index: numbe
   const after = normalizedText.slice(end, Math.min(normalizedText.length, end + 28));
 
   if (/\bx\s*$/.test(before) || /^\s*x\b/.test(after)) return false;
+  if (/\broto\s*$/.test(before)) return false;
   if (/\b(?:tamanho|tam|medida|medidas)\s*$/.test(before)) return false;
   if (/\b(?:quantidade|qtd|qtde)\s*$/.test(before)) return false;
   if (/^\s*(?:cm|metro|metros|m)\b/.test(after)) return false;
@@ -9328,6 +9329,15 @@ function extractWebOnlyCatalogProductTokens(productName: unknown): string[] {
     "produtos",
     "climatizador",
     "climatizadores",
+    "linha",
+    "linhas",
+    "toda",
+    "todo",
+    "todas",
+    "todos",
+    "modelo",
+    "modelos",
+    "roto",
     "fotos",
     "foto",
     "painel",
@@ -9557,7 +9567,7 @@ function looksLikeWebOnlyCatalogProductionDetails(actions: any[]): boolean {
       action?.product_name,
       action?.variation_name,
     ].filter(Boolean).join(" "));
-    return /\b(painel|paineis|cilindro|cilindros|capa|capas|estamparia|sublimacao|costurado|costura|sem costura|acabamento)\b/i.test(haystack);
+    return /\b(painel|paineis|cilindro|cilindros|estamparia|sublimacao|costurado|costura|sem costura|acabamento)\b/i.test(haystack);
   });
 }
 
