@@ -50528,8 +50528,11 @@ async function handleGroupBulkSend(req: any, res: any) {
           }))
           .filter((target: any) => target.groupId)
       : [];
+    const resolvedGroupTargets = groupTargets.length > 0
+      ? groupTargets
+      : groupIds.map((groupId: string) => ({ groupId, connectionId: "" }));
 
-    if (groupIds.length === 0) {
+    if (resolvedGroupTargets.length === 0) {
       return sendJson(res, 400, { message: "Lista de grupos e obrigatoria" });
     }
     if (!message && !mediaUrl) {
@@ -50538,7 +50541,7 @@ async function handleGroupBulkSend(req: any, res: any) {
 
     const targetConnectionIds = Array.from(
       new Set([
-        ...groupTargets.map((target: any) => target.connectionId).filter(Boolean),
+        ...resolvedGroupTargets.map((target: any) => target.connectionId).filter(Boolean),
         connectionId,
       ].filter(Boolean)),
     );
@@ -50557,7 +50560,6 @@ async function handleGroupBulkSend(req: any, res: any) {
     }
 
     const fallbackConnection = runtimeConnections[0];
-    const targetByGroupId = new Map(groupTargets.map((target: any) => [target.groupId, target.connectionId || ""]));
     const groupsMetadata = new Map<string, { name: string; connectionId: string }>();
     for (const connection of runtimeConnections) {
       try {
@@ -50573,8 +50575,9 @@ async function handleGroupBulkSend(req: any, res: any) {
       }
     }
 
-    const campaignContacts: BroadcastCampaignContact[] = groupIds.map((rawGroupId: string, index: number) => {
-      const explicitConnectionId = String(targetByGroupId.get(rawGroupId) || "").trim();
+    const campaignContacts: BroadcastCampaignContact[] = resolvedGroupTargets.map((target: any, index: number) => {
+      const rawGroupId = String(target.groupId || "").trim();
+      const explicitConnectionId = String(target.connectionId || "").trim();
       const selectedConnection = explicitConnectionId
         ? runtimeByConnectionId.get(explicitConnectionId)
         : fallbackConnection;

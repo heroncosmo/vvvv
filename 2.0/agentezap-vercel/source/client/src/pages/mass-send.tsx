@@ -127,6 +127,10 @@ interface WhatsAppConnectionOption {
   providerStatus?: string | null;
 }
 
+function getWhatsAppGroupSelectionKey(group: Pick<WhatsAppGroup, "id" | "connectionId">) {
+  return `${group.connectionId || "connection"}:${group.id}`;
+}
+
 interface ContactList {
   id: string;
   name: string;
@@ -1103,7 +1107,7 @@ export default function MassSendPage() {
       return Object.values(selectedSyncedContacts);
     } else if (recipientMode === 'groups') {
       // Para grupos, retornamos os grupos selecionados como "contatos" para contagem
-      const selectedGroups = whatsappGroups?.filter(g => selectedGroupIds.has(g.id)) || [];
+      const selectedGroups = whatsappGroups?.filter(g => selectedGroupIds.has(getWhatsAppGroupSelectionKey(g))) || [];
       return selectedGroups.map(g => ({ phone: g.id, name: g.name }));
     }
     return [];
@@ -1410,7 +1414,7 @@ export default function MassSendPage() {
     
     // Se for modo grupos, usar mutation específica
     if (recipientMode === 'groups') {
-      const selectedGroups = whatsappGroups.filter((group) => selectedGroupIds.has(group.id));
+      const selectedGroups = whatsappGroups.filter((group) => selectedGroupIds.has(getWhatsAppGroupSelectionKey(group)));
       const groupTargets = selectedGroups.map((group) => ({
         groupId: group.id,
         connectionId: group.connectionId,
@@ -2105,7 +2109,7 @@ Pedro Oliveira, 31988776655`}
                               if (selectedGroupIds.size === whatsappGroups.length) {
                                 setSelectedGroupIds(new Set());
                               } else {
-                                setSelectedGroupIds(new Set(whatsappGroups.map(g => g.id)));
+                                setSelectedGroupIds(new Set(whatsappGroups.map(getWhatsAppGroupSelectionKey)));
                               }
                             }}
                           >
@@ -2124,32 +2128,34 @@ Pedro Oliveira, 31988776655`}
                             .filter(group => 
                               group.name.toLowerCase().includes(groupSearchTerm.toLowerCase())
                             )
-                            .map((group) => (
-                              <div 
-                                key={group.id}
+                            .map((group) => {
+                              const selectionKey = getWhatsAppGroupSelectionKey(group);
+                              return (
+                              <div
+                                key={selectionKey}
                                 className={`
                                   p-3 rounded-lg border cursor-pointer transition-all hover:bg-muted/50
-                                  ${selectedGroupIds.has(group.id) ? 'border-blue-500 bg-blue-50 dark:bg-blue-950/30' : 'border-border'}
+                                  ${selectedGroupIds.has(selectionKey) ? 'border-blue-500 bg-blue-50 dark:bg-blue-950/30' : 'border-border'}
                                 `}
                                 onClick={() => {
                                   const newSet = new Set(selectedGroupIds);
-                                  if (newSet.has(group.id)) {
-                                    newSet.delete(group.id);
+                                  if (newSet.has(selectionKey)) {
+                                    newSet.delete(selectionKey);
                                   } else {
-                                    newSet.add(group.id);
+                                    newSet.add(selectionKey);
                                   }
                                   setSelectedGroupIds(newSet);
                                 }}
                               >
                                 <div className="flex items-center gap-3">
                                   <Checkbox
-                                    checked={selectedGroupIds.has(group.id)}
+                                    checked={selectedGroupIds.has(selectionKey)}
                                     onCheckedChange={(checked) => {
                                       const newSet = new Set(selectedGroupIds);
                                       if (checked) {
-                                        newSet.add(group.id);
+                                        newSet.add(selectionKey);
                                       } else {
-                                        newSet.delete(group.id);
+                                        newSet.delete(selectionKey);
                                       }
                                       setSelectedGroupIds(newSet);
                                     }}
@@ -2175,7 +2181,8 @@ Pedro Oliveira, 31988776655`}
                                   </Badge>
                                 </div>
                               </div>
-                            ))}
+                              );
+                            })}
                         </div>
                       </ScrollArea>
 
@@ -2189,7 +2196,7 @@ Pedro Oliveira, 31988776655`}
                             </span>
                             <span className="text-xs text-blue-600">
                               (~{whatsappGroups
-                                .filter(g => selectedGroupIds.has(g.id))
+                                .filter(g => selectedGroupIds.has(getWhatsAppGroupSelectionKey(g)))
                                 .reduce((acc, g) => acc + g.participantsCount, 0)} pessoas alcançadas)
                             </span>
                           </div>

@@ -13849,7 +13849,7 @@ export async function sendMessageToGroups(
       });
 
       const sendResult = await sendMessage(userId, conversation.id, finalMessage, {
-        source: "system",
+        source: "owner",
       });
 
       if (sendResult.success) {
