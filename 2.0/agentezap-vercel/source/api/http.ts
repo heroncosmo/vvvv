@@ -31815,10 +31815,10 @@ async function runAgendamento3AgentForUser(input: {
   }
 
   if (!plan.date || !plan.time) {
-    const missingText = !plan.date && !plan.time ? "o dia e o horário" : !plan.date ? "o dia" : "o horário";
+    const missingText = !plan.date && !plan.time ? "do dia e do horário" : !plan.date ? "do dia" : "do horário";
     return {
       handled: true,
-      response: `Para consultar a agenda corretamente, preciso de ${missingText}. Qual prefere?`,
+      response: `Para consultar a agenda corretamente, preciso ${missingText}. Qual prefere?`,
       plan,
       trace,
     };
