@@ -34438,7 +34438,7 @@ async function runWebOnlyGrupoOlxAgenticCatalogResponse(params: {
   if (isGrupoOlxVagueOnSiteListingRequest(params.message) && !searchContext.exactAddressSearch && !searchContext.codes.length) {
     return {
       handled: true,
-      response: "Ola! Para eu localizar esse imovel no nosso catalogo, me envie por favor o nome da rua, o numero do imovel e a cidade.",
+      response: "Olá! Para eu localizar esse imóvel no nosso catálogo, me envie por favor o nome da rua, o número do imóvel e a cidade.",
       mode: "grupo_olx_agentic_needs_address",
       matchedListingCodes: [],
       confidence: 0.98,
