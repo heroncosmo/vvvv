@@ -9916,6 +9916,12 @@ function extractWebOnlyCatalogSelectionDetails(selectionText: string, needsSize:
   return { acabamento, tamanho, quantidade };
 }
 
+function looksLikeWebOnlyProductionCatalogItem(value: string): boolean {
+  return /\b(painel|paineis|cilindro|cilindros|estamparia|sublimacao|costurado|costura|sem costura|acabamento)\b/i.test(
+    normalizeWebOnlyCatalogText(value),
+  );
+}
+
 function buildWebOnlyRecognizedCatalogSelectionResponse(message: string, selectionText?: string): string | null {
   const catalogMatches = Array.from(String(message || "").matchAll(/\[CATALOGO_IDENTIFICADO:\s*([\s\S]*?)\]/g));
   const catalogText = catalogMatches
@@ -9974,10 +9980,11 @@ function buildWebOnlyRecognizedCatalogSelectionResponse(message: string, selecti
       normalizedItemContext.includes("redondo") ||
       /\b(?:informe|informar|preciso|necessario|necessário)\b[\s\S]{0,80}\btamanho\b/i.test(normalizedItemContext) ||
       /\b(?:50\s*x\s*50|1\s*,?\s*50\s*x\s*1\s*,?\s*50|150\s*x\s*150)\b/i.test(normalizedItemContext);
+    const needsProductionDetails = looksLikeWebOnlyProductionCatalogItem(normalizedItemContext);
     const details = extractWebOnlyCatalogSelectionDetails(selectionText || message, needsSize);
     const missing = [
       needsSize && !details.tamanho && !hasKnownRedondoSize ? "tamanho" : null,
-      !details.acabamento && !hasKnownAcabamento ? "acabamento" : null,
+      needsProductionDetails && !details.acabamento && !hasKnownAcabamento ? "acabamento" : null,
       !details.quantidade && !hasKnownQuantity ? "quantidade" : null,
     ].filter(Boolean).join(", ");
     lines.push(`Item ${item.index}`);
@@ -10005,8 +10012,17 @@ function buildWebOnlyRecognizedCatalogSelectionResponse(message: string, selecti
     const examples = items
       .filter((item) => {
         const itemName = formatWebOnlyCatalogSelectionName(item.name || item.product);
-        const needsSize = normalizeWebOnlyCatalogText(itemName).includes("redondo");
-        return (needsSize && !hasKnownRedondoSize) || !hasKnownAcabamento || !hasKnownQuantity;
+        const normalizedItemContext = normalizeWebOnlyCatalogText([itemName, item.product, item.raw].join("\n"));
+        const needsSize =
+          normalizedItemContext.includes("redondo") ||
+          /\b(?:informe|informar|preciso|necessario|necessário)\b[\s\S]{0,80}\btamanho\b/i.test(normalizedItemContext) ||
+          /\b(?:50\s*x\s*50|1\s*,?\s*50\s*x\s*1\s*,?\s*50|150\s*x\s*150)\b/i.test(normalizedItemContext);
+        const needsProductionDetails = looksLikeWebOnlyProductionCatalogItem(normalizedItemContext);
+        return (
+          (needsSize && !hasKnownRedondoSize) ||
+          (needsProductionDetails && !hasKnownAcabamento) ||
+          !hasKnownQuantity
+        );
       })
       .slice(0, 3)
       .map((item) => {
@@ -10016,9 +10032,10 @@ function buildWebOnlyRecognizedCatalogSelectionResponse(message: string, selecti
           normalizedItemContext.includes("redondo") ||
           /\b(?:informe|informar|preciso|necessario|necessário)\b[\s\S]{0,80}\btamanho\b/i.test(normalizedItemContext) ||
           /\b(?:50\s*x\s*50|1\s*,?\s*50\s*x\s*1\s*,?\s*50|150\s*x\s*150)\b/i.test(normalizedItemContext);
+        const needsProductionDetails = looksLikeWebOnlyProductionCatalogItem(normalizedItemContext);
         const details = [
           needsSize && !hasKnownRedondoSize ? "50x50" : null,
-          !hasKnownAcabamento ? "sem costura" : null,
+          needsProductionDetails && !hasKnownAcabamento ? "sem costura" : null,
           !hasKnownQuantity ? "1 unidade" : null,
         ].filter(Boolean).join(", ");
         return `código ${item.code}: ${details}`;
