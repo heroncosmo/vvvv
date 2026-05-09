@@ -1,0 +1,55 @@
+# Exclude VCS and editor files
+.git
+.gitignore
+.vscode/
+.kilocode/
+.replit
+.serena/
+.vercel/
+
+# Node artifacts
+node_modules/
+dist/
+server/public/
+
+# Logs and temp
+.env*
+!.env.example
+*.log
+server.log
+tmp_admin_login.json
+tmp*
+.tmp/
+artifacts/
+output/
+graphify-out/
+validation-artifacts/
+validation-screenshots/
+flow2-local-validation/
+flow2-message-editor-production/
+flow2-message-editor-production-final/
+flow2-message-editor-production-final2/
+flow2-message-editor-validation/
+flow2-production-validation/
+flow2-runtime-production-validation/
+flow2-runtime-production-validation-final/
+flow2-ui-minimal-production/
+flow2-ui-minimal-validation/
+
+# Auth/session dumps
+auth_*/
+auth_admin_*/
+
+# Large subprojects not needed for deploy
+mcp-playwright-server/
+sequentialthinking-mcp-server/
+supabase-mcp-server/
+pix-por-piggly/
+
+# Assets not required for server runtime
+piggly.zip
+
+# Findeas theme: include only assets and landing-5.html
+findeas theme/**
+!findeas theme/assets/**
+!findeas theme/landing-5.html

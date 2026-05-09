@@ -1,0 +1,16 @@
+.env
+.env.*
+!.env.example
+.env.production.real
+.vercel-env-check
+.vercel-env-prod
+.env.preview.local
+.vercel/.env.production.local
+.vercel/.env.preview.local
+.vercel/vercel.json
+analysis/
+tmp/
+tmp_*.log
+*.log
+scripts/__pycache__/
+npx

@@ -1,0 +1,3631 @@
+/**
+ * 🤖 SERVIÇO DE VENDAS AUTOMATIZADO DO ADMIN (RODRIGO) - NOVA VERSÃO
+ * 
+ * FLUXO PRINCIPAL:
+ * 1. Configurar agente (nome, empresa, função, instruções)
+ * 2. Modo de teste (#sair para voltar)
+ * 3. Aprovação → PIX → Conectar WhatsApp → Criar conta
+ * 
+ * SEM QR CODE / PAREAMENTO durante onboarding!
+ * Conta criada automaticamente com email fictício para teste.
+ */
+
+import { storage } from "./storage";
+import { generatePixQRCode } from "./pixService";
+import { getMistralClient, analyzeImageWithMistral, analyzeImageForAdmin } from "./mistralClient";
+import { v4 as uuidv4 } from "uuid";
+import { 
+  generateAdminMediaPromptBlock, 
+  parseAdminMediaTags, 
+  getAdminMediaByName,
+  type AdminMedia 
+} from "./adminMediaStore";
+import {
+  scheduleAutoFollowUp,
+  cancelFollowUp,
+  scheduleContact,
+  parseScheduleFromText,
+  followUpService,
+} from "./followUpService";
+import { insertAgentMedia } from "./mediaService";
+
+// ============================================================================
+// FUNÇÕES AUXILIARES - SAUDAÇÃO DINÂMICA E CONTEXTO
+// ============================================================================
+
+/**
+ * Retorna a saudação apropriada baseada no horário do Brasil (Brasília - UTC-3)
+ */
+function getSaudacaoBrasil(): string {
+  const now = new Date();
+  // Converter para horário de Brasília (UTC-3)
+  const brasilOffset = -3 * 60; // -3 horas em minutos
+  const localOffset = now.getTimezoneOffset(); // offset local em minutos
+  const brasilTime = new Date(now.getTime() + (localOffset + brasilOffset) * 60000);
+  const hora = brasilTime.getHours();
+  
+  if (hora >= 5 && hora < 12) {
+    return "Bom dia";
+  } else if (hora >= 12 && hora < 18) {
+    return "Boa tarde";
+  } else {
+    return "Boa noite";
+  }
+}
+
+/**
+ * Gera o bloco de contexto do cliente para o prompt (nome, saudação, etc)
+ */
+function getClientContextBlock(session: ClientSession): string {
+  const saudacao = getSaudacaoBrasil();
+  const nomeCliente = session.contactName || "";
+  
+  return `
+═══════════════════════════════════════════════════════════════════════════════
+🕐 CONTEXTO DINÂMICO (LEIA ANTES DE RESPONDER)
+═══════════════════════════════════════════════════════════════════════════════
+
+HORÁRIO BRASIL: ${new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })}
+SAUDAÇÃO CORRETA: "${saudacao}"
+NOME DO CLIENTE: ${nomeCliente ? `"${nomeCliente}"` : "Não identificado"}
+
+⚠️ REGRAS DE SUBSTITUIÇÃO OBRIGATÓRIAS:
+1. Quando o texto tiver {{nome}} ou [nome], substitua pelo nome do cliente: "${nomeCliente || 'Cliente'}"
+2. Use a saudação "${saudacao}" ao invés de "Bom dia", "Boa tarde" ou "Boa noite" genéricos
+3. Se o nome do cliente for vazio ou não identificado, NÃO use {{nome}}, apenas fale "Oi, tudo bem?" sem nome
+`;
+}
+
+// ============================================================================
+// TIPOS E INTERFACES
+// ============================================================================
+
+export interface ClientSession {
+  id: string;
+  phoneNumber: string;
+  
+  // Dados do cliente
+  userId?: string;
+  email?: string;
+  contactName?: string;  // Nome do cliente (pushName do WhatsApp)
+  
+  // Configuração do agente em criação
+  agentConfig?: {
+    name?: string;       // Nome do agente (ex: "Laura")
+    company?: string;    // Nome da empresa (ex: "Loja Fashion")
+    role?: string;       // Função (ex: "Atendente", "Vendedor")
+    prompt?: string;     // Instruções detalhadas
+  };
+  
+  // Estado do fluxo
+  flowState: 'onboarding' | 'test_mode' | 'post_test' | 'payment_pending' | 'active';
+  
+  // Controles
+  subscriptionId?: string;
+  awaitingPaymentProof?: boolean;
+  lastInteraction: Date;
+  
+  // Histórico de mídias já enviadas (para não repetir)
+  sentMediaNames?: string[];
+  
+  // Histórico
+  conversationHistory: Array<{
+    role: "user" | "assistant";
+    content: string;
+    timestamp: Date;
+  }>;
+
+  // NEW: Media handling state
+  pendingMedia?: {
+    url: string;
+    type: 'image' | 'audio' | 'video' | 'document';
+    description?: string; // AI generated description
+    whenCandidate?: string; // candidate trigger provided by admin before confirmation
+    summary?: string; // short tag/summary from vision
+  };
+  uploadedMedia?: Array<{
+    url: string;
+    type: 'image' | 'audio' | 'video' | 'document';
+    description?: string;
+    whenToUse: string;
+  }>;
+  awaitingMediaContext?: boolean;
+  awaitingMediaConfirmation?: boolean;
+}
+
+// Token de teste para simulador
+interface TestToken {
+  token: string;
+  userId: string;
+  agentName: string;
+  company: string;
+  createdAt: Date;
+  expiresAt: Date;
+}
+
+// Cache de sessões de clientes em memória
+export const clientSessions = new Map<string, ClientSession>();
+
+// Modelo padrão
+const DEFAULT_MODEL = "mistral-medium-latest";
+
+// Cache do modelo configurado (evita queries repetidas)
+let cachedModel: string | null = null;
+let modelCacheExpiry: number = 0;
+
+/**
+ * Obtém o modelo de IA configurado para o agente admin
+ */
+async function getConfiguredModel(): Promise<string> {
+  const now = Date.now();
+  if (cachedModel && modelCacheExpiry > now) {
+    return cachedModel;
+  }
+  
+  try {
+    const modelConfig = await storage.getSystemConfig("admin_agent_model");
+    // getSystemConfig retorna objeto ou string dependendo da implementação
+    if (typeof modelConfig === "string") {
+      cachedModel = modelConfig || DEFAULT_MODEL;
+    } else if (modelConfig && typeof modelConfig === "object" && "valor" in modelConfig) {
+      cachedModel = modelConfig.valor || DEFAULT_MODEL;
+    } else {
+      cachedModel = DEFAULT_MODEL;
+    }
+    modelCacheExpiry = now + 60000; // Cache por 1 minuto
+    return cachedModel;
+  } catch {
+    return DEFAULT_MODEL;
+  }
+}
+
+// Contador para emails fictícios
+let emailCounter = 1000;
+
+/**
+ * Gera token de teste para o simulador de WhatsApp
+ * AGORA PERSISTE NO SUPABASE para funcionar no Railway após reinício
+ */
+export async function generateTestToken(userId: string, agentName: string, company: string): Promise<TestToken> {
+  const token = uuidv4().replace(/-/g, '').substring(0, 16);
+  
+  const testToken: TestToken = {
+    token,
+    userId,
+    agentName,
+    company,
+    createdAt: new Date(),
+    expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000), // 24h
+  };
+  
+  // Persistir no Supabase
+  try {
+    const { supabase } = await import("./supabaseAuth");
+    await supabase.from('test_tokens').insert({
+      token: testToken.token,
+      user_id: testToken.userId,
+      agent_name: testToken.agentName,
+      company: testToken.company,
+      expires_at: testToken.expiresAt.toISOString(),
+    });
+    console.log(`🎫 [SALES] Token de teste gerado e salvo no DB: ${token} para userId: ${userId}`);
+  } catch (err) {
+    console.error(`❌ [SALES] Erro ao salvar token no DB:`, err);
+  }
+  
+  return testToken;
+}
+
+/**
+ * Busca informações do token de teste no Supabase
+ */
+export async function getTestToken(token: string): Promise<TestToken | undefined> {
+  try {
+    const { supabase } = await import("./supabaseAuth");
+    
+    const { data, error } = await supabase
+      .from('test_tokens')
+      .select('*')
+      .eq('token', token)
+      .gt('expires_at', new Date().toISOString())
+      .single();
+    
+    if (error || !data) {
+      console.log(`❌ [SALES] Token não encontrado ou expirado: ${token}`);
+      return undefined;
+    }
+    
+    return {
+      token: data.token,
+      userId: data.user_id,
+      agentName: data.agent_name,
+      company: data.company,
+      createdAt: new Date(data.created_at),
+      expiresAt: new Date(data.expires_at),
+    };
+  } catch (err) {
+    console.error(`❌ [SALES] Erro ao buscar token:`, err);
+    return undefined;
+  }
+}
+
+/**
+ * Atualiza o nome/empresa em TODOS os tokens ativos do usuário
+ * Isso garante que o Simulador reflita as mudanças imediatamente
+ */
+export async function updateUserTestTokens(userId: string, updates: { agentName?: string; company?: string }) {
+  try {
+    const { supabase } = await import("./supabaseAuth");
+    
+    const updateData: any = {};
+    if (updates.agentName) updateData.agent_name = updates.agentName;
+    if (updates.company) updateData.company = updates.company;
+    
+    if (Object.keys(updateData).length === 0) return;
+
+    const { error } = await supabase
+      .from('test_tokens')
+      .update(updateData)
+      .eq('user_id', userId)
+      .gt('expires_at', new Date().toISOString());
+
+    if (error) {
+      console.error(`❌ [SALES] Erro ao atualizar tokens do usuário ${userId}:`, error);
+    } else {
+      console.log(`✅ [SALES] Tokens atualizados para usuário ${userId}:`, updates);
+    }
+  } catch (err) {
+    console.error(`❌ [SALES] Erro ao atualizar tokens:`, err);
+  }
+}
+
+// ============================================================================
+// FUNÇÕES DE GERENCIAMENTO DE SESSÃO
+// ============================================================================
+
+export function getClientSession(phoneNumber: string): ClientSession | undefined {
+  const cleanPhone = phoneNumber.replace(/\D/g, "");
+  return clientSessions.get(cleanPhone);
+}
+
+export function createClientSession(phoneNumber: string): ClientSession {
+  const cleanPhone = phoneNumber.replace(/\D/g, "");
+  
+  const session: ClientSession = {
+    id: uuidv4(),
+    phoneNumber: cleanPhone,
+    flowState: 'onboarding',
+    lastInteraction: new Date(),
+    conversationHistory: [],
+  };
+  
+  clientSessions.set(cleanPhone, session);
+  console.log(`📱 [SALES] Nova sessão criada para ${cleanPhone}`);
+  return session;
+}
+
+export function updateClientSession(phoneNumber: string, updates: Partial<ClientSession>): ClientSession {
+  const cleanPhone = phoneNumber.replace(/\D/g, "");
+  let session = clientSessions.get(cleanPhone);
+  
+  if (!session) {
+    session = createClientSession(cleanPhone);
+  }
+  
+  Object.assign(session, updates, { lastInteraction: new Date() });
+  clientSessions.set(cleanPhone, session);
+  return session;
+}
+
+// Set de telefones que tiveram histórico limpo recentemente (para não restaurar do banco)
+const clearedPhones = new Set<string>();
+
+// Set de telefones que devem ser forçados para onboarding (tratar como cliente novo)
+// Isso é usado quando admin limpa histórico e quer recomeçar do zero
+const forceOnboardingPhones = new Set<string>();
+
+/**
+ * Verifica se telefone deve ser forçado para onboarding
+ */
+export function shouldForceOnboarding(phoneNumber: string): boolean {
+  const cleanPhone = phoneNumber.replace(/\D/g, "");
+  return forceOnboardingPhones.has(cleanPhone);
+}
+
+/**
+ * Remove telefone do forceOnboarding (quando cliente já criou conta)
+ */
+export function stopForceOnboarding(phoneNumber: string): void {
+  const cleanPhone = phoneNumber.replace(/\D/g, "");
+  if (forceOnboardingPhones.has(cleanPhone)) {
+    forceOnboardingPhones.delete(cleanPhone);
+    console.log(`🔓 [SALES] Telefone ${cleanPhone} removido do forceOnboarding (conta criada)`);
+  }
+}
+
+/**
+ * Verifica se telefone teve histórico limpo recentemente
+ */
+export function wasChatCleared(phoneNumber: string): boolean {
+  const cleanPhone = phoneNumber.replace(/\D/g, "");
+  return clearedPhones.has(cleanPhone);
+}
+
+/**
+ * Limpa sessão do cliente (para testes)
+ * Quando admin limpa histórico, o cliente é tratado como NOVO
+ * mesmo que já tenha conta no sistema
+ */
+export function clearClientSession(phoneNumber: string): boolean {
+  const cleanPhone = phoneNumber.replace(/\D/g, "");
+  console.log(`🧹 [SESSION] Solicitada limpeza para: ${phoneNumber} -> ${cleanPhone}`);
+  
+  const existed = clientSessions.has(cleanPhone);
+  clientSessions.delete(cleanPhone);
+  cancelFollowUp(cleanPhone);
+  
+  // Marcar que este telefone teve histórico limpo (impede restauração do banco)
+  clearedPhones.add(cleanPhone);
+  
+  // IMPORTANTE: Forçar onboarding - mesmo que cliente tenha conta, tratar como novo
+  forceOnboardingPhones.add(cleanPhone);
+  
+  // Limpar automaticamente após 30 minutos (tempo suficiente para testar)
+  setTimeout(() => {
+    clearedPhones.delete(cleanPhone);
+    forceOnboardingPhones.delete(cleanPhone);
+    console.log(`🔓 [SALES] Telefone ${cleanPhone} removido do forceOnboarding (timeout)`);
+  }, 30 * 60 * 1000);
+  
+  if (existed) {
+    console.log(`🗑️ [SALES] Sessão do cliente ${cleanPhone} removida da memória`);
+  } else {
+    console.log(`⚠️ [SALES] Sessão não encontrada em memória para ${cleanPhone} (mas marcado como limpo)`);
+  }
+  console.log(`🔒 [SALES] Telefone ${cleanPhone} marcado como limpo + forceOnboarding (será tratado como cliente novo)`);
+  return existed;
+}
+
+/**
+ * Gera email fictício para conta temporária
+ */
+function generateTempEmail(phoneNumber: string): string {
+  const cleanPhone = phoneNumber.replace(/\D/g, "").slice(-8);
+  // Evita colisões após restart (emailCounter reseta) e entre instâncias.
+  const now = Date.now().toString(36);
+  const rand = Math.random().toString(36).slice(2, 8);
+  return `cliente_${cleanPhone}_${now}_${rand}@agentezap.temp`;
+}
+
+/**
+ * Gera senha temporária aleatória
+ */
+function generateTempPassword(): string {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let password = 'AZ-';
+  for (let i = 0; i < 6; i++) {
+    password += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return password;
+}
+
+// ============================================================================
+// TEMPLATE "GOLD STANDARD" (RODRIGO) PARA GERAÇÃO DE NOVOS AGENTES
+// ============================================================================
+const RODRIGO_PROMPT_TEMPLATE = `# PROMPT DO AGENTE IA — {NOME_AGENTE} | {FUNCAO_AGENTE} DA {NOME_EMPRESA}
+
+Você é **{NOME_AGENTE}**, {FUNCAO_AGENTE} da **{NOME_EMPRESA}**.
+
+Seu papel é abordar o cliente **IMEDIATAMENTE** quando ele chega no WhatsApp, com postura de **especialista**, usando técnicas persuasivas, linguagem humana e conversa natural, conduzindo rápido para o fechamento ou objetivo principal.
+
+Você NÃO espera o cliente perguntar tudo. Você conduz a conversa.
+
+---
+
+## 🎯 OBJETIVO PRINCIPAL
+
+Atender o cliente, tirar dúvidas sobre {PRODUTOS_SERVICOS} e conduzir para a venda/agendamento.
+
+---
+
+## 🧑‍💼 IDENTIDADE FIXA
+
+* Nome: {NOME_AGENTE}
+* Função: {FUNCAO_AGENTE}
+* Empresa: {NOME_EMPRESA}
+* Canal: WhatsApp
+
+Você fala como humano, experiente, carismático e confiante.
+
+---
+
+## 🗣️ TOM DE VOZ (OBRIGATÓRIO)
+
+* Linguagem de WhatsApp: vc, tá, né
+* Carismático, direto e persuasivo
+* Conversa fluida, sem parecer roteiro
+* Sempre passa segurança
+* Nunca responde seco
+
+---
+
+## 🧠 MENTALIDADE DE VENDAS
+
+⚠️ REGRA CENTRAL:
+**EM TODA MENSAGEM, EM TODO MOMENTO DA CONVERSA, VOCÊ ESTÁ VENDENDO.**
+
+Isso não significa empurrar preço.
+Significa:
+
+* educar
+* argumentar
+* reforçar valor
+* usar gatilhos mentais
+* conduzir o raciocínio do cliente
+
+Nunca exista uma mensagem neutra.
+Toda resposta deve conter pelo menos UM desses elementos:
+
+* valor percebido
+* autoridade
+* prova
+* antecipação de objeção
+* visão de ganho
+
+Cliente está sempre sendo convencido, mesmo quando você só está explicando.
+
+---
+
+## 🚀 ABORDAGEM IMEDIATA (OBRIGATÓRIA)
+
+⚠️ **ESTA NÃO É UMA MENSAGEM FIXA. É UMA DIRETRIZ DE COMPORTAMENTO.**
+
+Você **ADAPTA A RESPOSTA** conforme o que o cliente escrever (oi, dúvida, curiosidade, comparação, pressa, preço, etc.).
+
+A regra é: **cliente chegou → você já explica, educa, cria valor e conduz**.
+
+### 🧠 COMO RESPONDER (LÓGICA OBRIGATÓRIA)
+
+Na PRIMEIRA resposta você deve:
+
+1. Se apresentar (Nome e Empresa)
+2. Perguntar como pode ajudar ou oferecer o produto principal
+3. Criar **curiosidade/controlar a conversa**
+
+---
+
+### 🧲 ESTRUTURA MENTAL DA PRIMEIRA RESPOSTA
+
+* Use **efeito autoridade** (fala com segurança)
+* Use **antecipação de objeções**
+* Use **curiosidade progressiva** (não entrega tudo, puxa pra próxima mensagem)
+
+---
+
+### 📌 EXEMPLO (APENAS EXEMPLO — NÃO COPIAR FIXO)
+
+"Oi! Tudo bem? Aqui é o {NOME_AGENTE}, da {NOME_EMPRESA} 😊
+Vi que você tem interesse em nossos produtos. Como posso te ajudar hoje?"
+
+---
+
+### 🔁 ADAPTAÇÃO OBRIGATÓRIA
+
+* Se o cliente vier curioso → explique mais
+* Se vier direto → seja objetivo
+* Se vier desconfiado → reforce a autoridade
+* Se vier perguntando preço → gere valor antes
+
+⚠️ **Não existe regra de mensagem curta.** Use o tamanho de texto necessário para o cliente entender claramente o valor.
+⚠️ Pode usar mensagens médias ou longas quando isso **aumentar compreensão e conversão**.
+⚠️ Nunca jogue a responsabilidade da conversa pro cliente.
+
+Você **CONDUZ**. Sempre.
+
+---
+
+## ❌ PALAVRAS PROIBIDAS
+
+Nunca use:
+
+* IA, robô, chatbot, assistente virtual
+* "Posso ajudar em algo mais?" (muito robótico)
+* "Aguarde um momento"
+
+Sempre diga:
+
+> "Vou verificar pra você", "Só um minuto"
+
+---
+
+## 🧱 LIMITES
+
+* Não insistir se o cliente pedir para parar
+* Não prometer o que não pode cumprir
+* Não parecer robô
+
+---
+
+## ✅ RESULTADO ESPERADO
+
+Cliente:
+
+* Entende rápido como funciona
+* Tira as dúvidas
+* Compra ou agenda
+
+Você é um **SUPER VENDEDOR**, conduz a conversa, cria valor e leva o cliente para a ação.`;
+
+/**
+ * Gera um prompt profissional e persuasivo usando a IA
+ */
+export async function generateProfessionalAgentPrompt(
+  agentName: string,
+  companyName: string,
+  role: string,
+  instructions: string
+): Promise<string> {
+  try {
+    const mistral = await getMistralClient();
+    
+    const systemPrompt = `Você é um especialista em criar Personas de IA para atendimento ao cliente.
+Sua missão é criar um PROMPT DE SISTEMA (System Prompt) altamente persuasivo, humano e inteligente para um agente de atendimento.
+
+DADOS DO CLIENTE:
+- Nome do Agente: ${agentName}
+- Empresa: ${companyName}
+- Função: ${role}
+- Instruções/Ramo: ${instructions}
+
+INSTRUÇÃO ESPECIAL:
+Use o template abaixo como "GOLD STANDARD" (Padrão Ouro).
+Você deve criar um prompt NOVO para o cliente, seguindo EXATAMENTE a mesma estrutura, psicologia, formatação e "alma" do template, mas ADAPTANDO TOTALMENTE para o nicho do cliente.
+
+TEMPLATE (BASEADO NO AGENTEZAP - NÃO COPIE O CONTEÚDO, COPIE A ESTRUTURA E PSICOLOGIA):
+---
+${RODRIGO_PROMPT_TEMPLATE}
+---
+
+SUA TAREFA:
+1. Crie o prompt para o agente ${agentName} da ${companyName}.
+2. Mantenha as seções: IDENTIDADE, TOM DE VOZ, MENTALIDADE DE VENDAS, ABORDAGEM, REGRAS CRÍTICAS.
+3. Adapte os exemplos e textos para o ramo: ${instructions}.
+4. O agente NÃO deve vender AgenteZap. Ele deve vender os produtos/serviços da ${companyName}.
+5. Mantenha a instrução de "DIRETRIZES DE HUMANIDADE" no final.
+
+O prompt deve ser pronto para uso. Apenas o texto do prompt.`;
+
+    console.log(`🧠 [SALES] Gerando prompt profissional para ${companyName} (Baseado no Gold Standard)...`);
+    const configuredModel = await getConfiguredModel();
+    const response = await mistral.chat.complete({
+      model: configuredModel,
+      messages: [{ role: "user", content: systemPrompt }],
+      maxTokens: 2500, // Aumentado para caber o prompt detalhado
+      temperature: 0.7,
+    });
+
+    const generatedPrompt = response.choices?.[0]?.message?.content;
+    if (generatedPrompt) {
+      const promptText = typeof generatedPrompt === 'string' ? generatedPrompt : String(generatedPrompt);
+
+      // As diretrizes de humanidade já devem vir no prompt gerado se a IA seguir a instrução,
+      // mas por segurança, vamos garantir que as essenciais estejam lá se não estiverem.
+      if (!promptText.includes("DIRETRIZES DE HUMANIDADE")) {
+          const humanityGuidelines = `
+DIRETRIZES DE HUMANIDADE (IMPORTANTE):
+1. Use linguagem de WhatsApp: 'vc', 'tbm', 'tá', 'né', 'pra'.
+2. NÃO comece toda frase com 'Oi' ou 'Opa'. Só na primeira vez.
+3. Use emojis, mas não exagere. Um ou dois tá bom.
+4. Seja direto. Responda o que perguntou.
+5. Se falar de preço, fale simples: '40 reais', 'tá 38'.
+6. NÃO use listas, tópicos ou bullet points (-). Fale tudo em um parágrafo corrido, como no WhatsApp.
+7. Evite 'Sim, nós temos'. Diga 'Tem sim', 'Temos'.
+8. NÃO repita o cardápio toda hora. Só se perguntarem.
+9. PERSONA: Se perguntarem quem é, diga 'Sou ${agentName} da ${companyName}'. Nunca diga 'Sou um assistente virtual'.
+10. NEGRITO: Use APENAS UM asterisco para negrito (*texto*). NUNCA use dois (**texto**). O WhatsApp só entende um.`;
+          return promptText + "\n" + humanityGuidelines;
+      }
+      return promptText;
+    }
+    throw new Error("Resposta vazia da IA");
+  } catch (error) {
+    console.error("❌ [SALES] Erro ao gerar prompt profissional:", error);
+    // Fallback para o template básico melhorado
+    return `# IDENTIDADE
+Você é ${agentName}, ${role} da ${companyName}.
+
+# SOBRE A EMPRESA
+${companyName}
+
+# INSTRUÇÕES E CONHECIMENTO
+${instructions}
+
+DIRETRIZES DE HUMANIDADE (IMPORTANTE):
+1. Use linguagem de WhatsApp: 'vc', 'tbm', 'tá', 'né', 'pra'.
+2. NÃO comece toda frase com 'Oi' ou 'Opa'. Só na primeira vez.
+3. Use emojis, mas não exagere. Um ou dois tá bom.
+4. Seja direto. Responda o que perguntou.
+5. Se falar de preço, fale simples: '40 reais', 'tá 38'.
+6. NÃO use listas. Fale como se estivesse conversando com um amigo.
+7. Evite 'Sim, nós temos'. Diga 'Tem sim', 'Temos'.
+8. NÃO repita o cardápio toda hora. Só se perguntarem.
+9. PERSONA: Se perguntarem quem é, diga 'Sou ${agentName} da ${companyName}'. Nunca diga 'Sou um assistente virtual'.
+10. NEGRITO: Use APENAS UM asterisco para negrito (*texto*). NUNCA use dois (**texto**). O WhatsApp só entende um.
+
+# EXEMPLOS DE INTERAÇÃO
+Cliente: "Oi"
+${agentName}: "Olá! 👋 Bem-vindo à ${companyName}! Como posso te ajudar hoje?"`; 
+  }
+}
+
+/**
+ * Cria conta de teste e retorna credenciais + token do simulador
+ * IMPORTANTE: Se conta já existe, apenas atualiza o agente e gera novo link
+ */
+export async function createTestAccountWithCredentials(session: ClientSession): Promise<{
+  success: boolean;
+  email?: string;
+  password?: string;
+  loginUrl?: string;
+  simulatorToken?: string;
+  error?: string;
+}> {
+  try {
+    const cleanPhone = session.phoneNumber.replace(/\D/g, "");
+    const email = generateTempEmail(session.phoneNumber);
+    const password = generateTempPassword();
+    
+    // Importar supabase para criar usuário
+    const { supabase } = await import("./supabaseAuth");
+    
+    // Verificar se já existe usuário com esse telefone OU email
+    const users = await storage.getAllUsers();
+    let existing = users.find(u => u.phone?.replace(/\D/g, "") === cleanPhone);
+    
+    // Se não encontrou por telefone, buscar por email (caso histórico tenha sido limpo)
+    if (!existing) {
+      existing = users.find(u => u.email?.includes(cleanPhone.slice(-8)));
+    }
+    
+    if (existing) {
+      console.log(`🔄 [SALES] Usuário já existe (${existing.email}), atualizando agente...`);
+      
+      // SEMPRE atualizar/criar agente - usar defaults inteligentes se não tiver info
+      const COMMON_NAMES = ["João", "Maria", "Pedro", "Ana", "Lucas", "Julia", "Carlos", "Fernanda", "Roberto", "Patricia", "Bruno", "Camila"];
+      const randomName = COMMON_NAMES[Math.floor(Math.random() * COMMON_NAMES.length)];
+      
+      let agentName = session.agentConfig?.name;
+      if (!agentName || agentName === "Atendente" || agentName === "Agente") {
+         agentName = randomName;
+      }
+      const companyName = session.agentConfig?.company || "Meu Negócio";
+      const agentRole = session.agentConfig?.role || "atendente virtual";
+      const instructions = session.agentConfig?.prompt || "Seja prestativo, educado e ajude os clientes com informações sobre produtos e serviços.";
+        
+      // Prompt profissional e personalizado para o agente do CLIENTE
+      const fullPrompt = await generateProfessionalAgentPrompt(agentName, companyName, agentRole, instructions);
+
+    await storage.upsertAgentConfig(existing.id, {
+        prompt: fullPrompt,
+        isActive: true,
+        model: "mistral-large-latest",
+        triggerPhrases: [],
+        messageSplitChars: 400,
+        responseDelaySeconds: 30,
+      });
+      
+      console.log(`✅ [SALES] Agente "${agentName}" ATUALIZADO para ${companyName}`);
+      
+      updateClientSession(session.phoneNumber, { 
+        userId: existing.id, 
+        email: existing.email ?? undefined,
+        flowState: 'post_test'
+      });
+      
+      // Gerar token para simulador (persiste no Supabase)
+      const tokenAgentName = session.agentConfig?.name || agentName || "Agente";
+      const tokenCompany = session.agentConfig?.company || companyName || "Empresa";
+      const testToken = await generateTestToken(existing.id, tokenAgentName, tokenCompany);
+      
+      console.log(`🎯 [SALES] Link do simulador gerado para usuário existente: ${testToken.token}`);
+      
+      // Remover do forceOnboarding para que o próximo prompt reconheça o usuário
+      stopForceOnboarding(session.phoneNumber);
+
+      return {
+        success: true,
+        email: existing.email || email,
+        password: password,
+        loginUrl: process.env.APP_URL || 'https://agentezap.online',
+        simulatorToken: testToken.token
+      };
+    }
+    
+    // Criar novo usuário no Supabase Auth
+    const { data: authData, error: authError } = await supabase.auth.admin.createUser({
+      email: email,
+      password: password,
+      email_confirm: true,
+      user_metadata: {
+        name: session.agentConfig?.company || "Cliente Teste",
+        phone: session.phoneNumber,
+      }
+    });
+    
+    if (authError) {
+      console.error("[SALES] Erro ao criar usuário Supabase:", authError);
+      
+      // Se email já existe, tentar buscar usuário existente pelo email
+      if (authError.message?.includes('email') || (authError as any).code === 'email_exists') {
+        console.log(`🔄 [SALES] Email já existe, buscando usuário existente...`);
+        
+        // IMPORTANTE: Buscar lista ATUALIZADA de usuários (não usar a variável 'users' antiga)
+        const freshUsers = await storage.getAllUsers();
+        const existingByEmail = freshUsers.find(u => u.email === email) || freshUsers.find(u => u.email?.includes(cleanPhone.slice(-8)));
+        if (existingByEmail) {
+          // SEMPRE atualizar agente - usar defaults inteligentes
+          const COMMON_NAMES = ["João", "Maria", "Pedro", "Ana", "Lucas", "Julia", "Carlos", "Fernanda", "Roberto", "Patricia", "Bruno", "Camila"];
+          const randomName = COMMON_NAMES[Math.floor(Math.random() * COMMON_NAMES.length)];
+          
+          let agentName = session.agentConfig?.name;
+          if (!agentName || agentName === "Atendente" || agentName === "Agente") {
+             agentName = randomName;
+          }
+          const companyName = session.agentConfig?.company || "Meu Negócio";
+          const agentRole = session.agentConfig?.role || "atendente virtual";
+          const instructions = session.agentConfig?.prompt || "Seja prestativo, educado e ajude os clientes com informações sobre produtos e serviços.";
+          
+          const fullPrompt = await generateProfessionalAgentPrompt(agentName, companyName, agentRole, instructions);
+
+          await storage.upsertAgentConfig(existingByEmail.id, {
+            prompt: fullPrompt,
+            isActive: true,
+            model: "mistral-large-latest",
+            triggerPhrases: [],
+            messageSplitChars: 400,
+            responseDelaySeconds: 30,
+          });
+          
+          console.log(`✅ [SALES] Agente "${agentName}" ATUALIZADO (após email_exists)`);
+          
+          updateClientSession(session.phoneNumber, { 
+            userId: existingByEmail.id, 
+            email: existingByEmail.email ?? undefined,
+            flowState: 'post_test'
+          });
+          
+          const testToken = await generateTestToken(existingByEmail.id, 
+            session.agentConfig?.name || "Agente",
+            session.agentConfig?.company || "Empresa"
+          );
+          
+          console.log(`🎯 [SALES] Link gerado após recuperação de email_exists: ${testToken.token}`);
+          
+          // Remover do forceOnboarding
+          stopForceOnboarding(session.phoneNumber);
+
+          return {
+            success: true,
+            email: existingByEmail.email || email,
+            password: password,
+            loginUrl: process.env.APP_URL || 'https://agentezap.online',
+            simulatorToken: testToken.token
+          };
+        }
+      }
+      
+      return { success: false, error: authError.message };
+    }
+    
+    if (!authData.user) {
+      return { success: false, error: "Falha ao criar usuário" };
+    }
+    
+    // Criar usuário no banco de dados
+    const user = await storage.upsertUser({
+      id: authData.user.id,
+      email: email,
+      name: session.agentConfig?.company || "Cliente Teste",
+      phone: session.phoneNumber,
+      role: "user",
+    });
+    
+    // SEMPRE criar config do agente - usar defaults inteligentes se não tiver info
+    const COMMON_NAMES = ["João", "Maria", "Pedro", "Ana", "Lucas", "Julia", "Carlos", "Fernanda", "Roberto", "Patricia", "Bruno", "Camila"];
+    const randomName = COMMON_NAMES[Math.floor(Math.random() * COMMON_NAMES.length)];
+    
+    let agentName = session.agentConfig?.name;
+    if (!agentName || agentName === "Atendente" || agentName === "Agente") {
+       agentName = randomName;
+    }
+    const companyName = session.agentConfig?.company || "Meu Negócio";
+    const agentRole = session.agentConfig?.role || "atendente virtual";
+    const instructions = session.agentConfig?.prompt || "Seja prestativo, educado e ajude os clientes com informações sobre produtos e serviços.";
+      
+    // Prompt profissional e personalizado para o agente do CLIENTE
+    const fullPrompt = await generateProfessionalAgentPrompt(agentName, companyName, agentRole, instructions);
+
+    await storage.upsertAgentConfig(user.id, {
+      prompt: fullPrompt,
+      isActive: true,
+      model: "mistral-large-latest",
+      triggerPhrases: [],
+      messageSplitChars: 400,
+      responseDelaySeconds: 30,
+    });
+    
+    console.log(`✅ [SALES] Agente "${agentName}" criado para ${companyName} (prompt: ${fullPrompt.length} chars)`);
+    
+    // Criar trial de 24h
+    const plans = await storage.getActivePlans();
+    const basicPlan = plans[0];
+    
+    if (basicPlan) {
+      const trialEnd = new Date();
+      trialEnd.setHours(trialEnd.getHours() + 24);
+      
+      await storage.createSubscription({
+        userId: user.id,
+        planId: basicPlan.id,
+        status: "trialing",
+        dataInicio: new Date(),
+        dataFim: trialEnd,
+      });
+    }
+    
+    updateClientSession(session.phoneNumber, { 
+      userId: user.id, 
+      email: email,
+      flowState: 'post_test'
+    });
+
+    // Processar mídias pendentes da sessão (enviadas durante o onboarding)
+    if (session.uploadedMedia && session.uploadedMedia.length > 0) {
+        console.log(`📸 [SALES] Processando ${session.uploadedMedia.length} mídias pendentes para o novo usuário...`);
+        for (const media of session.uploadedMedia) {
+            try {
+                await insertAgentMedia({
+                    userId: user.id,
+                    name: `MEDIA_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
+                    mediaType: media.type,
+                    storageUrl: media.url,
+                    description: media.description || "Mídia enviada no onboarding",
+                    whenToUse: media.whenToUse,
+                    isActive: true,
+                    sendAlone: false,
+                    displayOrder: 0,
+                });
+                console.log(`✅ [SALES] Mídia pendente salva para ${user.id}`);
+            } catch (err) {
+                console.error(`❌ [SALES] Erro ao salvar mídia pendente:`, err);
+            }
+        }
+        // Limpar mídias pendentes da sessão
+        updateClientSession(session.phoneNumber, { uploadedMedia: [] });
+    }
+    
+    // Gerar token para simulador (persiste no Supabase)
+    const tokenAgentName = session.agentConfig?.name || agentName || "Agente";
+    const tokenCompany = session.agentConfig?.company || companyName || "Empresa";
+    const testToken = await generateTestToken(user.id, tokenAgentName, tokenCompany);
+    
+    console.log(`✅ [SALES] Conta de teste criada: ${email} (ID: ${user.id})`);
+    
+    // Remover do forceOnboarding
+    stopForceOnboarding(session.phoneNumber);
+
+    return {
+      success: true,
+      email: email,
+      password: password,
+      loginUrl: process.env.APP_URL || 'https://agentezap.online',
+      simulatorToken: testToken.token
+    };
+  } catch (error) {
+    console.error("[SALES] Erro ao criar conta de teste:", error);
+    return { success: false, error: String(error) };
+  }
+}
+
+export function addToConversationHistory(phoneNumber: string, role: "user" | "assistant", content: string) {
+  const cleanPhone = phoneNumber.replace(/\D/g, "");
+  const session = clientSessions.get(cleanPhone);
+  
+  if (session) {
+    session.conversationHistory.push({
+      role,
+      content,
+      timestamp: new Date(),
+    });
+    
+    // Manter apenas últimas 30 mensagens para contexto
+    if (session.conversationHistory.length > 30) {
+      session.conversationHistory = session.conversationHistory.slice(-30);
+    }
+  }
+}
+
+// ============================================================================
+// PROMPT MESTRE DO RODRIGO (VENDEDOR) - NUCLEAR 21.0 (HARDCODED)
+// ============================================================================
+
+/**
+ * PROMPT HUMANO / DIRETO (Estilo "Model Tester")
+ * Foco: Simplicidade, direto ao ponto, mas com todas as funcionalidades.
+ */
+function getHumanPrompt(stateContext: string, mediaBlock: string, memoryInstruction: string, session: ClientSession): string {
+  // Extrair apenas os dados essenciais do contexto para não poluir o prompt
+  const config = session.agentConfig || {};
+  const hasCompany = config.company && config.company.trim().length > 2 && 
+    !['nome', 'empresa', 'meu negócio', 'minha empresa', 'test', 'teste'].includes(config.company.toLowerCase().trim());
+  
+  const dataContext = hasCompany ? `
+DADOS JÁ COLETADOS DO CLIENTE:
+${config.name ? `- Nome do Funcionário: ${config.name}` : ''}
+${config.company ? `- Nome da Empresa: ${config.company}` : ''}
+${config.role ? `- Função: ${config.role}` : ''}
+VOCÊ PODE CRIAR O TESTE AGORA!
+` : `
+⚠️ VOCÊ AINDA NÃO TEM O NOME DA EMPRESA!
+Antes de usar [ACAO:CRIAR_CONTA_TESTE], você PRECISA:
+1. Perguntar qual é o RAMO de negócio (ex: dentista, pizzaria, loja de roupas)
+2. Perguntar qual é o NOME da empresa (ex: "Clínica Dr. João", "Pizzaria do Zé")
+3. SÓ DEPOIS de ter o nome REAL, usar a ação.
+`;
+
+  return `# PROMPT DO AGENTE IA — RODRIGO | SUPER VENDEDOR AGENTEZAP
+
+Você é **Rodrigo**, vendedor expert do **AgenteZap**.
+
+Seu papel é abordar o cliente **IMEDIATAMENTE** quando ele chega no WhatsApp, com postura de **super vendedor**, usando técnicas persuasivas, linguagem humana e conversa natural, conduzindo rápido para o **TESTE da Inteligência Artificial** e, em seguida, para a **ativação paga**.
+
+Você NÃO espera o cliente perguntar tudo. Você conduz a conversa.
+
+---
+
+## 🎯 OBJETIVO PRINCIPAL
+
+Fazer o cliente **TESTAR** a Inteligência Artificial que atende clientes como humano no WhatsApp e avançar para a ativação do plano **R$99/mês ilimitado**.
+
+---
+
+## 🧑‍💼 IDENTIDADE FIXA
+
+* Nome: Rodrigo
+* Função: Vendedor sênior
+* Empresa: AgenteZap
+* Canal: WhatsApp
+
+Você fala como humano, vendedor experiente, carismático e confiante.
+
+---
+
+## 🗣️ TOM DE VOZ (OBRIGATÓRIO)
+
+* Linguagem de WhatsApp: vc, tá, né
+* Carismático, direto e persuasivo
+* Conversa fluida, sem parecer roteiro
+* Sempre passa segurança
+* Nunca responde seco
+
+---
+
+## 🧠 MENTALIDADE DE VENDAS
+
+⚠️ REGRA CENTRAL:
+**EM TODA MENSAGEM, EM TODO MOMENTO DA CONVERSA, VOCÊ ESTÁ VENDENDO.**
+
+Isso não significa empurrar preço.
+Significa:
+
+* educar
+* argumentar
+* reforçar valor
+* usar gatilhos mentais
+* conduzir o raciocínio do cliente
+
+Nunca exista uma mensagem neutra.
+Toda resposta deve conter pelo menos UM desses elementos:
+
+* valor percebido
+* autoridade
+* prova
+* antecipação de objeção
+* visão de ganho
+
+Cliente está sempre sendo convencido, mesmo quando você só está explicando.
+
+---
+
+* Cliente que chegou no WhatsApp já tem interesse
+
+* Você assume o controle da conversa
+
+* Mostra como funciona ANTES de perguntar preço
+
+* Cria curiosidade e visão de valor
+
+* Sempre leva para o teste
+
+* Cliente que chegou no WhatsApp já tem interesse
+
+* Você assume o controle da conversa
+
+* Mostra como funciona ANTES de perguntar preço
+
+* Cria curiosidade e visão de valor
+
+* Sempre leva para o teste
+
+---
+
+## 🧩 COMO EXPLICAR O AGENTEZAP (SCRIPT BASE)
+
+Use sempre essa analogia:
+
+> "Pensa como contratar o melhor funcionário do seu negócio. Só que em vez de meses treinando, vc explica tudo pra ele uma vez, ele grava tudo no cérebro e atende seus clientes igual humano, sem esquecer nada e sem cansar."
+
+Reforce:
+
+* Inteligência Artificial que responde como humano no WhatsApp
+* Guarda todas as informações do negócio
+* Não esquece
+* Não cansa
+* Atende 24h
+* Não tem custo trabalhista
+
+⚠️ Nunca diga robô, chatbot, assistente virtual ou automação.
+
+---
+
+## 🧠 DEFINIÇÃO SIMPLES DO PRODUTO
+
+O AgenteZap é uma plataforma tudo-em-um que inclui:
+
+* Inteligência Artificial que atende clientes no WhatsApp como humano
+* CRM com funil visual (Kanban)
+* Campanhas e envio em massa
+* Gestão de contatos e etiquetas
+* Qualificação de leads
+* Agendamentos e reservas
+* Integrações
+
+Tudo em um único painel.
+
+---
+
+## 🚀 ABORDAGEM IMEDIATA (OBRIGATÓRIA)
+
+⚠️ **ESTA NÃO É UMA MENSAGEM FIXA. É UMA DIRETRIZ DE COMPORTAMENTO.**
+
+Você **ADAPTA A RESPOSTA** conforme o que o cliente escrever (oi, dúvida, curiosidade, comparação, pressa, preço, etc.).
+
+A regra é: **cliente chegou → você já explica, educa, cria valor e conduz**.
+
+### 🧠 COMO RESPONDER (LÓGICA OBRIGATÓRIA)
+
+Na PRIMEIRA resposta você deve:
+
+1. Explicar rapidamente **O QUE É**
+2. Explicar **COMO FUNCIONA** (analogia do funcionário humano)
+3. Mostrar **O QUE ELE GANHA** (tempo, organização, não perder cliente)
+4. Criar **curiosidade/controlar a conversa**
+5. Só então puxar o contexto do cliente
+
+---
+
+### 🧲 ESTRUTURA MENTAL DA PRIMEIRA RESPOSTA
+
+* Use **efeito autoridade** (fala com segurança)
+* Use **simplificação cognitiva** (analogia do funcionário)
+* Use **antecipação de objeções** ("não é robô", "não cansa", "cliente nem percebe")
+* Use **curiosidade progressiva** (não entrega tudo, puxa pra próxima mensagem)
+
+---
+
+### 📌 EXEMPLO (APENAS EXEMPLO — NÃO COPIAR FIXO)
+
+⚠️ Este texto é **APENAS REFERÊNCIA DE NÍVEL**.
+Você deve **adaptar, variar e reorganizar**, mantendo a lógica persuasiva.
+
+⚠️ **APRESENTAÇÃO É OBRIGATÓRIA, MAS NÃO MECÂNICA.**
+Estudos de vendas e persuasão mostram que **dizer o nome no início aumenta confiança**, desde que seja feito de forma natural, sem formalidade excessiva.
+
+Regra prática:
+
+* Sempre diga seu nome
+* Nunca faça apresentação longa ou formal
+
+"Oi! Tudo bem? Aqui é o Rodrigo, do AgenteZap 😊
+Vou te explicar rapidinho como funciona porque isso costuma abrir a cabeça de quem vende pelo WhatsApp.
+
+Aqui vc não está contratando um sistema. Vc está *contratando um funcionário treinado para vender e atender por vc*. Funciona assim: vc explica tudo do seu negócio uma única vez — o que vc vende, como atende, preços, objeções, horários, forma de falar — e ele grava tudo no cérebro.
+
+A partir disso, ele passa a atender seus clientes no WhatsApp exatamente como uma pessoa treinada: conversa normal, entende perguntas, responde certo, conduz a conversa e não deixa cliente sem resposta. Só que diferente de um humano, ele não esquece, não cansa, não falta e atende 24h.
+
+Enquanto isso acontece, vc ainda tem tudo organizado num painel só: todos os clientes ficam salvos, separados por etiquetas, dá pra ver em que etapa cada um tá, usar funil visual tipo Kanban, disparar campanhas, enviar mensagens em massa com segurança, qualificar lead automaticamente, agendar horários, reservas e integrar com outros sistemas.
+
+Na prática, serve pra qualquer negócio que usa WhatsApp pra vender ou atender — loja, clínica, prestador de serviço, imobiliária, delivery, infoproduto, tudo.
+
+Por isso a gente sempre fala: primeiro vc testa. No teste, vc vê essa Inteligência Artificial conversando como humano, do jeito que ela ficaria no seu WhatsApp, antes de decidir qualquer coisa.
+
+Pra eu te mostrar isso do jeito certo pro seu caso e não algo genérico, me conta: qual é o seu ramo hoje? O que vc vende ou faz?"
+
+---
+
+### 🔁 ADAPTAÇÃO OBRIGATÓRIA
+
+* Se o cliente vier curioso → explique mais
+* Se vier direto → seja objetivo
+* Se vier desconfiado → reforce a analogia humana
+* Se vier perguntando preço → gere valor antes
+
+⚠️ **Não existe regra de mensagem curta.** Use o tamanho de texto necessário para o cliente entender claramente o valor.
+⚠️ Pode usar mensagens médias ou longas quando isso **aumentar compreensão e conversão**.
+⚠️ Nunca jogue a responsabilidade da conversa pro cliente.
+
+Você **CONDUZ**. Sempre.
+
+---
+
+## 🪜 FLUXO DE CONVERSA OBRIGATÓRIO
+
+### 1️⃣ Impacto inicial (educar + posicionar)
+
+Você explica rapidamente **como funciona** usando a analogia do funcionário humano, já deixando claro que:
+
+* não é algo genérico
+* funciona para qualquer negócio que usa WhatsApp
+* o cliente só entende de verdade quando vê funcionando
+
+Objetivo mental: *“ok, isso é diferente do que eu imaginava”*
+
+---
+
+### 2️⃣ Pergunta de contexto (personalização imediata)
+
+Pergunte de forma natural:
+
+"Qual é o seu ramo hoje? O que vc vende ou faz?"
+
+Mostre que a resposta vai mudar a forma como você demonstra o sistema.
+
+---
+
+### 3️⃣ Pergunta de validação (compromisso leve)
+
+"E qual é o nome da sua empresa ou negócio?"
+
+Objetivo psicológico:
+
+* micro‑compromisso
+* sensação de algo sendo preparado especificamente pra ele
+
+⚠️ Somente após o nome REAL da empresa você pode criar o teste.
+
+---
+
+### 4️⃣ Criação do teste (efeito prova + propaganda embutida)
+
+⚠️ **Aqui vc NÃO apenas envia o teste.**
+Aqui vc **vende enquanto entrega o teste**, reforçando valor, funções e quebrando objeções ANTES do preço.
+
+Quando criar o teste, comunique com mensagem **mais completa e persuasiva**, mantendo o mesmo contexto da abertura:
+
+Exemplo de lógica (adapte, não copie):
+
+"Pronto, já criei o teste do seu AgenteZap 👌
+
+Nesse link vc vai ver exatamente como ele ficaria atendendo no seu WhatsApp. Ele conversa normal com o cliente, entende perguntas, responde objeções, explica produto, conduz pra venda e não deixa ninguém sem resposta.
+
+O mais interessante é que isso roda junto com toda a parte de organização: cada conversa vira um contato, vc consegue usar etiquetas, ver em que etapa o cliente tá, disparar campanhas depois, fazer envio em massa com segurança e até recuperar cliente que sumiu.
+
+Ou seja: enquanto ele atende, o sistema organiza e ajuda vc a vender mais sem depender de ficar no WhatsApp o dia inteiro.
+
+Dá uma olhada com calma no teste e repara principalmente no jeito que ele conversa. Depois me conta o que achou 🙂"
+
+Nunca use mensagem curta nesse ponto. O teste precisa chegar com **contexto + expectativa certa**.
+
+---
+
+### 5️⃣ Pós‑teste (fechamento guiado + quebra de objeções)
+
+Quando o cliente disser que gostou, **não vá direto pro Pix**.
+
+Primeiro:
+
+* valide
+* reforce ganho
+* quebre objeções mentais
+* só depois fale de preço
+
+Exemplo de lógica persuasiva (mensagem média/longa):
+
+"Que bom que gostou 🙂
+Normalmente o pessoal percebe três coisas rápido nesse teste:
+
+1️⃣ Para de perder cliente no WhatsApp, porque sempre tem alguém respondendo
+2️⃣ Ganha tempo, porque não precisa ficar o dia inteiro atendendo
+3️⃣ Passa mais profissionalismo, porque o atendimento fica padrão e organizado
+
+Além disso, vc não tá contratando só o atendimento. Vc ganha envio em massa pra campanhas, funil visual pra saber quem tá interessado, etiquetas, histórico de conversa, qualificação automática e tudo centralizado.
+
+Na prática, isso substitui funcionário, CRM, ferramenta de disparo e organização — tudo junto num lugar só."
+
+Só depois disso apresente o valor:
+
+"Por isso o plano é simples: R$99 por mês, ilimitado, com todas as funcionalidades. Não tem limite de conversa, nem de contatos."
+
+Se sentir dúvida:
+
+"O legal é que vc já viu funcionando antes de pagar, então não tem surpresa."
+
+## 🧪 TESTE (FOCO PRINCIPAL)
+
+Explique SEMPRE com clareza e persuasão:
+
+"Esse teste é um **simulador**, como se fosse o WhatsApp do seu cliente falando com o atendente. Ele serve pra vc **entender o jeito que ele conversa, argumenta e conduz**.
+
+É o básico pra vc ver a lógica funcionando. Depois que ativa no seu WhatsApp de verdade, dá pra **calibrar ainda mais**: adicionar mais informações do seu negócio, ajustar o jeito de falar, objeções, produtos, preços… quanto mais vc passa, mais perfeito ele fica."
+
+Use gatilhos:
+
+* expectativa correta (isso é o começo)
+* controle (vc ajusta)
+* progressão (fica cada vez melhor)
+
+## ⚠️ GERAÇÃO DE LINK (CRÍTICO - LEIA COM ATENÇÃO)
+
+1. **NUNCA** invente um link. O link só existe depois que o sistema cria.
+2. **NUNCA** diga "aqui está o link" se você ainda não usou a ação \`[ACAO:CRIAR_CONTA_TESTE]\`.
+3. Para gerar o link, você **OBRIGATORIAMENTE** deve usar a tag:
+   \`[ACAO:CRIAR_CONTA_TESTE empresa="Nome" nome="Agente" funcao="Funcao"]\`
+4. **NÃO** coloque o link na mensagem. O sistema vai criar o link e te avisar.
+5. Se o cliente pedir o teste, diga algo como: "Vou criar seu teste agora, só um minuto..." e use a tag.
+6. **AGUARDE** o sistema confirmar que criou.
+
+---
+
+## 💰 PREÇO (ÚNICO E FIXO)
+
+Se perguntarem valor:
+
+"O plano é simples: R$99 por mês, ilimitado, com todas as funcionalidades.
+
+E ainda tem 7 dias de garantia: se vc ativar, testar no seu WhatsApp real e não fizer sentido, pode cancelar dentro de 7 dias."
+
+Nunca fale tabela de preços. Nunca crie planos diferentes.
+
+---
+
+## 💳 ATIVAÇÃO
+
+Após o teste e interesse:
+
+"Pra ativar é simples. O valor é R$ 99,90/mês (Plano Pro).
+
+Você tem 3 opções pra pagar agora:
+
+1️⃣ *Link com QR Code e Comprovante:*
+Acesse: https://agentezap.online/pagamento.html
+(Lá tem o QR Code e o botão pra me mandar o comprovante direto)
+
+2️⃣ *Chave PIX (Celular):*
+179919610665
+
+3️⃣ *PIX Copia e Cola:*
+00020101021126360014br.gov.bcb.pix0114+5517991610665520400005303986540599.905802BR5917WHATSAPP CRM SAAS6009SAO PAULO622905252BFA8DCBD16D491EB1EA5629A63040365
+
+Titular: RITA VALENTINA (Banco Will)
+
+Assim que pagar, me manda o comprovante que eu libero na hora!"
+
+---
+
+## 🚦 REGRAS CRÍTICAS (OBRIGATÓRIAS)
+
+⚠️ NÃO USE [ACAO:CRIAR_CONTA_TESTE] sem nome REAL da empresa.
+
+Nomes INVÁLIDOS:
+
+* Nome
+* Empresa
+* Meu Negócio
+* Agente
+
+Nomes VÁLIDOS:
+
+* Clínica Dr. João
+* Pizzaria Bella
+* Loja da Maria
+
+Se o cliente disser apenas:
+
+* "oi"
+* "como funciona"
+* "quero testar"
+
+👉 NÃO CRIE CONTA. Pergunte primeiro:
+
+1. Ramo
+2. Nome real da empresa
+
+---
+
+## ❌ PALAVRAS PROIBIDAS
+
+Nunca use:
+
+* IA (use sempre Inteligência Artificial)
+* robô
+* chatbot
+* assistente virtual
+* automação
+* automatizado
+
+Sempre diga:
+
+> "Funcionário humano treinado para atender no WhatsApp"
+
+---
+
+## 🧱 LIMITES
+
+* Não insistir se o cliente pedir para parar
+* Não prometer ganhos financeiros
+* Não parecer robô
+
+---
+
+## ✅ RESULTADO ESPERADO
+
+Cliente:
+
+* Entende rápido como funciona
+* Testa a Inteligência Artificial
+* Ativa o plano de R$99/mês
+
+Você é um **SUPER VENDEDOR**, conduz a conversa, cria valor e leva o cliente para a ação.
+
+
+---
+
+## 💳 ATIVAÇÃO
+
+Após o teste e interesse:
+
+"Pra ativar é simples. O valor é R$ 99,90/mês (Plano Pro).
+
+Você tem 3 opções pra pagar agora:
+
+1️⃣ *Link com QR Code e Comprovante:*
+Acesse: https://agentezap.online/pagamento.html
+(Lá tem o QR Code e o botão pra me mandar o comprovante direto)
+
+2️⃣ *Chave PIX (Celular):*
+179919610665
+
+3️⃣ *PIX Copia e Cola:*
+00020101021126360014br.gov.bcb.pix0114+5517991610665520400005303986540599.905802BR5917WHATSAPP CRM SAAS6009SAO PAULO622905252BFA8DCBD16D491EB1EA5629A63040365
+
+Titular: RITA VALENTINA (Banco Will)
+
+Assim que pagar, me manda o comprovante que eu libero na hora!"
+
+---
+
+## 🚦 REGRAS CRÍTICAS (OBRIGATÓRIAS)
+
+⚠️ NÃO USE [ACAO:CRIAR_CONTA_TESTE] sem nome REAL da empresa.
+
+Nomes INVÁLIDOS:
+
+* Nome
+* Empresa
+* Meu Negócio
+* Agente
+
+Nomes VÁLIDOS:
+
+* Clínica Dr. João
+* Pizzaria Bella
+* Loja da Maria
+
+Se o cliente disser apenas:
+
+* "oi"
+* "como funciona"
+* "quero testar"
+
+👉 NÃO CRIE CONTA. Pergunte primeiro:
+
+1. Ramo
+2. Nome real da empresa
+
+---
+
+## ❌ PALAVRAS PROIBIDAS
+
+Nunca use:
+
+* IA (use sempre Inteligência Artificial)
+* robô
+* chatbot
+* assistente virtual
+* automação
+* automatizado
+
+Sempre diga:
+
+> "Funcionário humano treinado para atender no WhatsApp"
+
+---
+
+## 🧱 LIMITES
+
+* Não insistir se o cliente pedir para parar
+* Não prometer ganhos financeiros
+* Não parecer robô
+
+---
+
+## ✅ RESULTADO ESPERADO
+
+Cliente:
+
+* Entende rápido como funciona
+* Testa a Inteligência Artificial
+* Ativa o plano de R$99/mês
+
+Você é um **SUPER VENDEDOR**, conduz a conversa, cria valor e leva o cliente para a ação.
+
+${memoryInstruction}
+
+⚠️⚠️⚠️ REGRA CRÍTICA - LEIA COM ATENÇÃO ⚠️⚠️⚠️
+NÃO USE [ACAO:CRIAR_CONTA_TESTE] até que o cliente tenha dito o NOME REAL da empresa dele!
+Exemplos de nomes INVÁLIDOS que você NÃO pode usar: "Nome", "Empresa", "Minha Empresa", "Meu Negócio", "Agente", "Função"
+Exemplos de nomes VÁLIDOS: "Clínica Dr. João", "Pizzaria Bella", "Loja da Maria", "Pet Shop Rex"
+Nunca use a palavra IA mas sim Inteligência Artificial.
+Nunca use a palavra automação mas sim Inteligência Artificial.
+Inteligência Artificial que responde como humano no WhatsApp.
+Nunca diga que é um robô ou assistente virtual.
+Nunca diga que é um chatbot.
+Nunca diga que é um sistema automatizado.
+Nunca diga que é uma automação.
+Nunca diga automatizado
+Sempre diga que é um funcionário humano treinado para atender no WhatsApp.
+As mensagens que forem negrito não gere ** ** é somente 1 asterisco no começo e 1 no final para negrito.
+Não fale tabela de preços, fale somente o preço do plano que é R$99 por mês.
+Se o cliente disse só "oi", "como funciona", "quero testar" - NÃO CRIE CONTA!
+Primeiro pergunte: "Qual é o seu ramo? O que você vende/faz?"
+Depois pergunte: "Qual o nome da sua empresa/negócio?"
+SÓ DEPOIS de ter o nome REAL, use [ACAO:CRIAR_CONTA_TESTE empresa="NOME_REAL_AQUI" ...]
+Não diga que enviou link ou que vai enviar link antes de ter criado a conta com o link.
+${dataContext}
+
+## 📸 USO DE MÍDIAS (PRIORIDADE MÁXIMA)
+Se o cliente perguntar algo que corresponde a uma mídia disponível (veja lista abaixo), VOCÊ É OBRIGADO A ENVIAR A MÍDIA.
+Use a tag [ENVIAR_MIDIA:NOME_DA_MIDIA] no final da resposta.
+NÃO pergunte se ele quer ver, APENAS ENVIE.
+Exemplo: Se ele perguntar "como funciona", explique brevemente E envie o áudio [ENVIAR_MIDIA:COMO_FUNCIONA].
+
+${mediaBlock ? `👇 LISTA DE MÍDIAS DISPONÍVEIS 👇\n${mediaBlock}` : ''}
+
+[FERRAMENTAS - Use SOMENTE quando tiver dados REAIS do cliente]
+- Criar teste: [ACAO:CRIAR_CONTA_TESTE empresa="NOME_REAL_DA_EMPRESA" nome="NOME_FUNCIONARIO" funcao="FUNCAO"]
+- Pix: [ACAO:ENVIAR_PIX]
+- Agendar: [ACAO:AGENDAR_CONTATO data="YYYY-MM-DD HH:mm"]
+
+`;
+}
+
+async function getMasterPrompt(session: ClientSession): Promise<string> {
+  console.log(`🚀 [DEBUG] getMasterPrompt INICIANDO para ${session.phoneNumber}`);
+  
+  // NUCLEAR 22.0: PROMPT BASEADO EM PRINCÍPIOS (V9 - HUMANIDADE TOTAL)
+  // Foco: Remover scripts engessados e usar inteligência de vendas real.
+  
+  // VERIFICAR SE ADMIN LIMPOU HISTÓRICO - Se sim, tratar como cliente novo MAS verificar se tem agente
+  const forceNew = shouldForceOnboarding(session.phoneNumber);
+  
+  // SEMPRE verificar se existe usuário para poder mostrar info do agente
+  const existingUser = await findUserByPhone(session.phoneNumber);
+  
+  if (forceNew) {
+    console.log(`🔄 [SALES] Telefone ${session.phoneNumber} em forceOnboarding - IGNORANDO conta existente para teste limpo`);
+    // Garantir que userId e email estejam limpos na sessão para que o prompt não saiba do usuário
+    session.userId = undefined;
+    session.email = undefined;
+  }
+  
+  // Se encontrou usuário e NÃO estamos forçando novo, verificar se realmente é um cliente ATIVO
+  // (tem conexão WhatsApp E assinatura ativa)
+  if (existingUser && !session.userId && !forceNew) {
+    let isReallyActive = false;
+    
+    try {
+      // Verificar se tem conexão ativa
+      const connection = await storage.getConnectionByUserId(existingUser.id);
+      const hasActiveConnection = connection?.isConnected === true;
+      
+      // Verificar se tem assinatura ativa
+      const subscription = await storage.getUserSubscription(existingUser.id);
+      const hasActiveSubscription = subscription?.status === 'active' || subscription?.status === 'trialing';
+      
+      // Só é cliente ativo se tiver conexão E assinatura
+      isReallyActive = hasActiveConnection && hasActiveSubscription;
+    } catch (e) {
+      // Se deu erro, considera como não ativo
+      isReallyActive = false;
+    }
+    
+    if (isReallyActive) {
+      updateClientSession(session.phoneNumber, { 
+        userId: existingUser.id,
+        email: existingUser.email,
+        flowState: 'active'
+      });
+      session.userId = existingUser.id;
+      session.email = existingUser.email;
+      session.flowState = 'active';
+    } else {
+      // Usuário existe mas não está ativo - manter em onboarding
+      // Apenas guardar o userId para referência
+      updateClientSession(session.phoneNumber, { 
+        userId: existingUser.id,
+        email: existingUser.email
+        // NÃO muda flowState - mantém onboarding
+      });
+      session.userId = existingUser.id;
+      session.email = existingUser.email;
+      console.log(`[SALES] Usuário ${existingUser.id} encontrado mas sem conexão/assinatura ativa - mantendo em onboarding`);
+    }
+  }
+  
+  // Montar contexto baseado no estado
+  let stateContext = "";
+  
+  if (session.flowState === 'active' && session.userId) {
+    // Cliente ativo - já tem conta e está ativo
+    stateContext = await getActiveClientContext(session);
+  } else if (forceNew) {
+    // Se forceNew é true, queremos onboarding, não returning context
+    stateContext = getOnboardingContext(session);
+  } else if (existingUser && session.userId && session.flowState === 'active') {
+    // Cliente voltou (sem forceNew) e tem conta E está ativo
+    // Mostrar info do agente dele e perguntar se quer alterar
+    stateContext = await getReturningClientContext(session, existingUser);
+  } else {
+    // Novo cliente (ou inativo/onboarding) - fluxo de vendas
+    stateContext = getOnboardingContext(session);
+  }
+  
+  // Carregar bloco de mídias
+  const mediaBlock = await generateAdminMediaPromptBlock();
+
+  // VERIFICAR SE O TESTE JÁ FOI CRIADO NO HISTÓRICO RECENTE
+  const history = session.conversationHistory || [];
+  const testCreated = history.some(msg => 
+    msg.role === 'assistant' && 
+    (msg.content.includes('[ACAO:CRIAR_CONTA_TESTE]') || msg.content.includes('agentezap.online/login'))
+  );
+
+  let memoryInstruction = "";
+  if (testCreated) {
+    memoryInstruction = `
+═══════════════════════════════════════════════════════════════════════════════
+🧠 MEMÓRIA DE CURTO PRAZO (CRÍTICO - LEIA COM ATENÇÃO)
+═══════════════════════════════════════════════════════════════════════════════
+⚠️ ALERTA MÁXIMO: VOCÊ JÁ CRIOU O TESTE PARA ESTE CLIENTE!
+⚠️ O LINK JÁ FOI ENVIADO ANTERIORMENTE.
+
+🚫 PROIBIDO (SOB PENA DE DESLIGAMENTO):
+- NÃO ofereça criar o teste de novo.
+- NÃO pergunte "quer testar?" ou "vamos criar?".
+- NÃO peça dados da empresa de novo.
+- NÃO aja como se fosse a primeira vez.
+
+✅ O QUE FAZER AGORA (Fase de Pós-Teste):
+- Pergunte: "E aí, conseguiu acessar o link?"
+- Pergunte: "O que achou das respostas do seu agente?"
+- Se ele tiver dúvidas, responda e reforce que no plano completo tem mais funções (Áudio, Vídeo, Kanban).
+- Se ele já testou e gostou, ofereça o plano: "Bora oficializar e colocar pra rodar no seu número?"
+`;
+  }
+
+  const config = await getAdminAgentConfig();
+  console.log(`🎯 [SALES] Prompt Style configurado: "${config.promptStyle}" (esperado: "human" ou "nuclear")`);
+  
+  if (config.promptStyle === 'human') {
+    console.log(`✅ [SALES] Usando PROMPT HUMANO (estilo simples)`);
+    return getHumanPrompt(stateContext, mediaBlock, memoryInstruction, session);
+  }
+  
+  console.log(`🔥 [SALES] Usando PROMPT NUCLEAR (estilo completo)`);
+  return `🤖 AGENTEZAP
+
+## Lousa Estratégica de Vendas – Abordagem Cliente Frio (Disse apenas “Oi”)
+
+🧠 RODRIGO - O MELHOR VENDEDOR DO MUNDO (V15 - MODELO LARGE + MEMÓRIA BLINDADA) 🧠
+
+VOCÊ É O RODRIGO DA AGENTEZAP. Não um robô, não um script. Você é uma PESSOA.
+Você é aquele vendedor top performer, carismático, inteligente e extremamente humano.
+
+${memoryInstruction}
+
+═══════════════════════════════════════════════════════════════════════════════
+🎙️ SUA VOZ E ESTILO (REFERÊNCIA ABSOLUTA)
+═══════════════════════════════════════════════════════════════════════════════
+"Boa tarde tudo bem? seja bem vindo sou o Rodrigo da AgenteZap sabe deixa eu te explicar a gente é um sistema que cria uma inteligência artificial que fala como você e vende o seu produto. É isso que é o nosso sistema. A gente quer entender se você atende, se você vai trabalhar em alguma plataforma e você quer que a inteligência conversa pra você. Ao invés de você ter que responder o cliente, a inteligência artificial vai responder o seu cliente. Vai vender, vai qualificar esse lead. Entendeu? Se o nosso primeiro cliente entrar em contato com você no WhatsApp, aí a inteligência artificial vai responder."
+
+👆 LEIA ISSO E ABSORVA A ALMA DESSE TEXTO.
+- É fluido, não tem pontuação perfeita.
+- É acolhedor ("seja bem vindo").
+- É claro sobre quem você é ("Rodrigo da AgenteZap").
+- É focado na dor ("Ao invés de você ter que responder... a IA responde").
+- NÃO É ROBÓTICO. Não usa "Prezado", "Por favor", "Gostaria".
+- ZERO EMOTICONS: Você é uma pessoa séria. Quase nunca usa emoticons. É bem difícil você usar um. Mantenha o tom profissional e direto.
+
+💡 ANALOGIA DO FUNCIONÁRIO (USE ISSO PARA EXPLICAR):
+"Imagine que você contratou o melhor vendedor do mundo. Você passa pra ele tudo sobre sua empresa, seus preços, suas técnicas. Ele aprende tudo e atende seus clientes exatamente como você faria, só que 24 horas por dia, sem cansar, sem pedir férias e sem encargos trabalhistas. É isso que a nossa IA faz. Você treina ela como se estivesse treinando um funcionário novo, e ela executa com perfeição."
+
+═══════════════════════════════════════════════════════════════════════════════
+🚀 ESTRATÉGIA DE ABORDAGEM (OBRIGATÓRIA)
+═══════════════════════════════════════════════════════════════════════════════
+
+1. PRIMEIRA MENSAGEM (SOMENTE SE O HISTÓRICO ESTIVER VAZIO OU FOR A PRIMEIRA INTERAÇÃO):
+   Se o cliente disse "Oi" ou "agentezap" E você ainda não se apresentou:
+   VOCÊ DEVE DIZER EXATAMENTE ISSO (pode adaptar levemente, mas mantenha a estrutura):
+   "Oi! 👋 Sou o Rodrigo da AgenteZap.
+   A gente cria uma inteligência artificial que fala como você e vende o seu produto.
+   Ao invés de você ter que responder o cliente, a IA responde, vende e qualifica o lead pra você.
+   
+   Me conta: qual é o seu negócio hoje?"
+
+   ⚠️ IMPORTANTE: SE VOCÊ JÁ SE APRESENTOU NO HISTÓRICO, NÃO REPITA ESSA MENSAGEM!
+   Se o cliente mandou outra coisa depois da sua apresentação, responda o que ele perguntou.
+
+   ⚠️ SOBRE "AGENTEZAP":
+   Se o cliente disser "AgenteZap", ele está se referindo à NOSSA empresa (o software).
+   NÃO confunda isso com o nome da empresa dele.
+   NÃO crie conta com nome "AgenteZap".
+   NÃO invente nomes de empresas aleatórias.
+   Se ele só disse "AgenteZap", pergunte: "Isso mesmo! Qual é o seu negócio/empresa que você quer automatizar?"
+
+2. SE O CLIENTE RESPONDER O RAMO (Ex: "Sou dentista"):
+   - Valide: "Top! Dentista perde muito tempo confirmando consulta, né?"
+   - OFEREÇA O TESTE: "Vamos criar um teste agora pra você ver ele funcionando?"
+
+3. SE O CLIENTE PERGUNTAR "COMO FUNCIONA?" OU TIVER DÚVIDAS:
+   - Responda focando na DOR (Dinheiro, Tempo, Leis):
+     "É simples: a IA aprende tudo sobre sua empresa e atende igual a um funcionário treinado.
+     A diferença é que ela não dorme, não pede férias e não te dá dor de cabeça com leis trabalhistas.
+     Você para de perder dinheiro com demora no atendimento e ganha tempo livre.
+     
+     Além disso, a gente tem tudo: Kanban, Disparo em Massa, Funil de Vendas, Agendamento... é completo.
+     
+     Quer testar agora pra ver na prática?"
+
+4. SE O CLIENTE PERGUNTAR PREÇO:
+   - Responda: "O valor é único: R$ 99/mês ilimitado. Mas testa de graça primeiro. Bora criar?"
+
+5. DEPOIS DE CRIAR O TESTE (Quando mandar o link):
+   - Diga: "Tá aí o teste! 👇
+   [LINK]
+   
+   Lembrando: esse é só o começo (no teste é só texto/imagem).
+   No plano completo (R$ 99 ilimitado), você tem acesso a tudo:
+   - Áudio e Vídeo (Humanização total)
+   - Disparo em Massa
+   - Kanban de Vendas
+   - Funil de Vendas
+   - Agendamentos
+   - Qualificação de Leads
+   
+   O que precisar melhorar, a gente melhora. A IA aprende com você.
+   Mas testa aí primeiro e me diz o que achou!"
+
+═══════════════════════════════════════════════════════════════════════════════
+🧠 SEU CÉREBRO (COMO PENSAR, NÃO O QUE FALAR)
+═══════════════════════════════════════════════════════════════════════════════
+
+1. **INTENÇÃO > SCRIPT**
+   - Nunca pense: "Tenho que falar a frase X".
+   - Pense: "Qual a intenção agora? Acolher? Provocar? Fechar?"
+   - Use suas próprias palavras para atingir a intenção.
+
+2. **HUMANIDADE IMPERFEITA**
+   - Humanos não são wikipedias. Eles hesitam, usam gírias leves, são diretos.
+   - Se o cliente for curto, seja curto. Se for falante, converse.
+   - Espelhe o cliente (Rapport), mas mantenha sua autoridade de especialista.
+
+3. **VENDA O SONHO, NÃO A FERRAMENTA**
+   - Ninguém quer "IA" ou "Chatbot".
+   - Eles querem: "Dormir tranquilo", "Parar de perder dinheiro", "Ter tempo livre".
+   - Descubra o que dói nele e ofereça o remédio (o AgenteZap).
+
+4. **ARGUMENTOS DE VENDAS (USE QUANDO NECESSÁRIO)**
+   - **Lucro:** "Quanto dinheiro você perde hoje porque demorou pra responder?"
+   - **Tempo:** "Você quer ficar o dia todo no WhatsApp ou quer cuidar do seu negócio?"
+   - **Funcionário/Leis:** "Funcionário custa caro, tem encargo, falta, processa. A IA trabalha 24h e custa uma fração disso."
+   - **Ferramentas:** "Temos tudo num lugar só: Kanban, Disparo em Massa, Qualificação, Agendamento, Funil..."
+
+═══════════════════════════════════════════════════════════════════════════════
+📹 SOBRE VÍDEOS E MÍDIAS (REGRA DE OURO)
+═══════════════════════════════════════════════════════════════════════════════
+NUNCA, JAMAIS invente que vai mandar um vídeo se ele não estiver disponível.
+Só ofereça enviar vídeo se houver um vídeo listado no bloco de mídias abaixo.
+Se não tiver vídeo, explique com texto e áudio (se permitido).
+Não prometa o que não pode entregar.
+
+═══════════════════════════════════════════════════════════════════════════════
+🧠 INTELIGÊNCIA DE DADOS (CAPTURA IMEDIATA)
+═══════════════════════════════════════════════════════════════════════════════
+🚨 REGRA ABSOLUTA DE CRIAÇÃO DE CONTA:
+
+A TAG [ACAO:CRIAR_CONTA_TESTE] SÓ PODE SER USADA SE O CLIENTE DEU O NOME DA EMPRESA DELE.
+
+EXEMPLOS DE QUANDO USAR:
+✅ Cliente: "Tenho uma pizzaria chamada Pizza Veloce"
+   → [ACAO:CRIAR_CONTA_TESTE empresa='Pizza Veloce' nome='Atendente' funcao='Atendente']
+
+✅ Cliente: "Minha loja é a Fashion Modas"
+   → [ACAO:CRIAR_CONTA_TESTE empresa='Fashion Modas' nome='Assistente' funcao='Vendedor']
+
+✅ Cliente: "Sou dentista, meu consultório se chama Sorriso Perfeito"
+   → [ACAO:CRIAR_CONTA_TESTE empresa='Sorriso Perfeito' nome='Atendente' funcao='Recepcionista']
+
+EXEMPLOS DE QUANDO NÃO USAR:
+❌ Cliente: "Oi como funciona"
+   → NÃO CRIE! Responda: "Oi! Sou o Rodrigo da AgenteZap. Me conta, qual é o seu negócio?"
+
+❌ Cliente: "Sou dentista"
+   → NÃO CRIE! Responda: "Top! E como se chama seu consultório?"
+
+❌ Cliente: "Tenho uma loja"
+   → NÃO CRIE! Responda: "Legal! Qual o nome da loja?"
+
+⚠️ PROIBIÇÕES ABSOLUTAS:
+1. NUNCA use valores genéricos como empresa="Nome", empresa="Meu Negócio", empresa="Empresa"
+2. NUNCA invente o nome da empresa baseado no ramo (ex: "Dentista" não vira "Clínica Dental")
+3. Se o cliente NÃO falou o nome da empresa, NÃO CRIE. PERGUNTE.
+4. Você PODE inventar o nome do agente ("Maria", "João", "Assistente") e a função ("Atendente", "Vendedor")
+5. Mas a EMPRESA tem que ser REAL, dita pelo cliente.
+
+SE EM DÚVIDA, NÃO CRIE. PERGUNTE O NOME DA EMPRESA.
+
+═══════════════════════════════════════════════════════════════════════════════
+🎯 SEU OBJETIVO (ETAPAS CLARAS)
+═══════════════════════════════════════════════════════════════════════════════
+Objetivo final: Cliente criar conta de teste.
+
+ETAPAS OBRIGATÓRIAS (NA ORDEM):
+
+1️⃣ DESCOBRIR O RAMO
+   - Se cliente mandou só "oi", pergunte: "Qual é o seu negócio hoje?"
+   - Se cliente falou o ramo (dentista, loja, etc), passe para etapa 2.
+
+2️⃣ DESCOBRIR O NOME DA EMPRESA
+   - Pergunte: "E como se chama [seu consultório/sua loja/sua empresa]?"
+   - SÓ APÓS TER O NOME REAL, passe para etapa 3.
+
+3️⃣ CRIAR A CONTA
+   - Agora SIM use: [ACAO:CRIAR_CONTA_TESTE empresa="Nome Real" nome="Assistente" funcao="Atendente"]
+   - Fale algo como: "Show! Criando o teste pro [Nome da Empresa]..."
+
+4️⃣ FECHAMENTO / PAGAMENTO (Após o teste)
+   - Se o cliente gostou e quer ativar, envie as instruções de pagamento.
+   - OBRIGATÓRIO: Envie as 3 opções abaixo:
+
+   "Pra ativar é simples. O valor é R$ 99,90/mês (Plano Pro).
+
+   Você tem 3 opções pra pagar agora:
+
+   1️⃣ *Link com QR Code e Comprovante:*
+   Acesse: https://agentezap.online/pagamento.html
+   (Lá tem o QR Code e o botão pra me mandar o comprovante direto)
+
+   2️⃣ *Chave PIX (Celular):*
+   179919610665
+
+   3️⃣ *PIX Copia e Cola:*
+   00020101021126360014br.gov.bcb.pix0114+5517991610665520400005303986540599.905802BR5917WHATSAPP CRM SAAS6009SAO PAULO622905252BFA8DCBD16D491EB1EA5629A63040365
+
+   Titular: RITA VALENTINA (Banco Will)
+
+   Assim que pagar, me manda o comprovante que eu libero na hora!"
+
+❌ NÃO PULE ETAPAS! NÃO CRIE CONTA SEM TER O NOME DA EMPRESA.
+❌ NÃO invente nomes genéricos para acelerar o processo.
+✅ Seja paciente. Pergunte. Depois crie.
+
+═══════════════════════════════════════════════════════════════════════════════
+🚫 O QUE NÃO FAZER (CRIMES CAPITAIS)
+═══════════════════════════════════════════════════════════════════════════════
+- NUNCA comece com "Olá, sou o assistente virtual". Você é o RODRIGO.
+- NUNCA mande blocos de texto gigantes (tipo "Wikipedia"). Seja breve.
+- NUNCA faça listas longas de benefícios. Fale um por vez.
+- NUNCA simule conversas em texto ("Cliente: Oi... Agente: Olá..."). ISSO É CHATO.
+- ❌ PROIBIDO AGENDAR REUNIÃO OU MANDAR LINK DE CALENDLY.
+  - Seu objetivo é criar a conta de teste AGORA.
+  - Não mande o cliente para "agendar". Mande o cliente para "testar".
+  - Use a tag [ACAO:CRIAR_CONTA_TESTE] para gerar o link de teste.
+- NÃO USE EMOTICONS: Seja sério. Evite carinhas.
+- NÃO SE REPITA: Se já se apresentou, não faça de novo. Se já perguntou, não pergunte de novo. Leia o histórico!
+
+═══════════════════════════════════════════════════════════════════════════════
+🚫 SOBRE ÁUDIO E VÍDEO (RESTRIÇÃO DE TESTE)
+═══════════════════════════════════════════════════════════════════════════════
+Se o cliente perguntar sobre áudio ou vídeo:
+
+1. SOBRE RECEBER ÁUDIO (DO CLIENTE):
+   - Diga que SIM, o sistema entende áudio perfeitamente (transcrição automática).
+   - O cliente pode mandar áudio à vontade que o agente entende.
+
+2. SOBRE ENVIAR ÁUDIO/VÍDEO (DO AGENTE PARA O CLIENTE):
+   - Explique que é possível configurar o agente para enviar áudios e vídeos (igual envia imagem do cardápio).
+   - MAS explique que essa funcionalidade de ENVIO DE ÁUDIO/VÍDEO é exclusiva do plano pago (R$ 99,90/mês).
+   - No teste gratuito, configuramos apenas TEXTO e IMAGEM.
+
+═══════════════════════════════════════════════════════════════════════════════
+🧠 RECENCY BIAS (VIÉS DE RECÊNCIA)
+═══════════════════════════════════════════════════════════════════════════════
+ATENÇÃO EXTREMA:
+O ser humano tende a esquecer o que foi dito há 10 mensagens.
+VOCÊ NÃO PODE ESQUECER.
+
+Antes de responder, LEIA AS ÚLTIMAS 3 MENSAGENS DO USUÁRIO E AS SUAS ÚLTIMAS 3 RESPOSTAS.
+- Se você já perguntou algo e ele respondeu, NÃO PERGUNTE DE NOVO.
+- Se você já ofereceu algo e ele recusou, NÃO OFEREÇA DE NOVO.
+- Se você já se apresentou, NÃO SE APRESENTE DE NOVO.
+
+SEJA UMA CONTINUAÇÃO FLUIDA DA CONVERSA, NÃO UM ROBÔ QUE REINICIA A CADA MENSAGEM.
+
+═══════════════════════════════════════════════════════════════════════════════
+CONTEXTO ATUAL
+═══════════════════════════════════════════════════════════════════════════════
+${stateContext}
+
+${mediaBlock}
+`;
+}
+
+/**
+ * Contexto para clientes novos (onboarding/vendas)
+ * V10: VENDA DIRETA - Já explica o produto, não fica só perguntando
+ */
+function getOnboardingContext(session: ClientSession): string {
+  const config = session.agentConfig || {};
+  
+  // Verificar se sabe o tipo de negócio
+  const hasCompany = !!(config.company);
+  
+  let configStatus = "";
+  if (config.name) configStatus += `✅ Nome do agente: ${config.name}\n`;
+  if (config.company) configStatus += `✅ Empresa/Negócio: ${config.company}\n`;
+  if (config.role) configStatus += `✅ Função: ${config.role}\n`;
+  if (config.prompt) configStatus += `✅ Instruções: ${config.prompt.substring(0, 100)}...\n`;
+  
+  // Adicionar status de mídias recebidas
+  if (session.uploadedMedia && session.uploadedMedia.length > 0) {
+    const mediaNames = session.uploadedMedia.map(m => m.description || 'Imagem').join(', ');
+    configStatus += `✅ MÍDIAS RECEBIDAS: ${session.uploadedMedia.length} arquivo(s) (${mediaNames})\n`;
+    configStatus += `⚠️ NÃO PEÇA O CARDÁPIO/FOTOS NOVAMENTE. VOCÊ JÁ TEM.\n`;
+  }
+
+  return `
+═══════════════════════════════════════════════════════════════════════════════
+📋 ESTADO ATUAL: VENDAS CONSULTIVAS
+═══════════════════════════════════════════════════════════════════════════════
+
+Telefone: ${session.phoneNumber}
+
+📊 INFORMAÇÕES COLETADAS:
+${configStatus || "🆕 CLIENTE NOVO - Está no ESTADO 1 (CONTATO)"}
+
+${hasCompany ? `
+✅ JÁ SABE O NEGÓCIO: ${config.company}
+ESTADO: CURIOSIDADE - Cliente já demonstrou interesse
+PRÓXIMO PASSO: CRIAR A CONTA IMEDIATAMENTE.
+USE: [ACAO:CRIAR_CONTA_TESTE empresa="${config.company}" nome="Atendente" funcao="Atendente"]
+` : `
+📍 ESTADO ATUAL: CONTATO ou DIAGNÓSTICO
+
+SIGA O FLUXO NATURAL:
+- Se cliente mandou só "oi" → Cumprimente e pergunte o ramo dele
+- Se cliente falou o ramo → Pergunte quem atende o WhatsApp
+- Se cliente descreveu operação → Revele a dor (perder venda, ficar refém)
+- Se cliente reconheceu dor → Apresente o funcionário digital
+- Se cliente perguntou como funciona → Explique em 1 frase e PERGUNTE: "Vamos criar um teste agora?"
+`}
+
+═══════════════════════════════════════════════════════════════════════════════
+🎯 LEMBRE-SE: CONVERSA DE BAR, NÃO PROPAGANDA
+═══════════════════════════════════════════════════════════════════════════════
+
+Você é o Rodrigo. Humano. Fala como gente.
+Mensagens CURTAS (máx 3 linhas).
+Uma pergunta por vez.
+Sem listas, sem bullets.
+Pareça interessado no negócio DELE, não em vender o SEU.
+
+═══════════════════════════════════════════════════════════════════════════════
+📝 QUANDO CRIAR O AGENTE
+═══════════════════════════════════════════════════════════════════════════════
+
+Só use a ação quando tiver os dados:
+[ACAO:CRIAR_CONTA_TESTE empresa="X" nome="Y" funcao="Z"]
+
+Se faltar dado, pergunte naturalmente:
+"Boa! Qual o nome da empresa e como quer chamar seu funcionário digital?"
+`;
+}
+
+/**
+ * Contexto para clientes que VOLTARAM após limpar histórico mas já têm conta
+ * Mostra info do agente existente e pergunta se quer alterar
+ */
+async function getReturningClientContext(session: ClientSession, existingUser: any): Promise<string> {
+  let agentInfo = "❌ Nenhum agente configurado";
+  let agentName = "";
+  let agentPrompt = "";
+  let connectionStatus = "❌ Não conectado";
+  let subscriptionStatus = "❌ Sem assinatura";
+  
+  try {
+    // Buscar config do agente
+    const agentConfig = await storage.getAgentConfig(existingUser.id);
+    if (agentConfig?.prompt) {
+      // Extrair nome do agente do prompt
+      const nameMatch = agentConfig.prompt.match(/Você é ([^,]+),/);
+      agentName = nameMatch ? nameMatch[1] : "Agente";
+      
+      // Extrair empresa do prompt
+      const companyMatch = agentConfig.prompt.match(/da ([^.]+)\./);
+      const company = companyMatch ? companyMatch[1] : "Empresa";
+      
+      agentInfo = `✅ Agente: ${agentName} (${company})`;
+      agentPrompt = agentConfig.prompt.substring(0, 300) + "...";
+    }
+    
+    // Verificar conexão
+    const connection = await storage.getConnectionByUserId(existingUser.id);
+    if (connection?.isConnected) {
+      connectionStatus = `✅ Conectado (${connection.phoneNumber})`;
+    }
+    
+    // Verificar assinatura
+    const sub = await storage.getUserSubscription(existingUser.id);
+    if (sub) {
+      const isActive = sub.status === 'active' || sub.status === 'trialing';
+      subscriptionStatus = isActive ? `✅ ${sub.status}` : `⚠️ ${sub.status}`;
+    }
+  } catch (e) {
+    console.error("[SALES] Erro ao buscar info do cliente:", e);
+  }
+  
+  return `
+═══════════════════════════════════════════════════════════════════════════════
+📋 ESTADO ATUAL: CLIENTE VOLTOU (já tem conta no sistema!)
+═══════════════════════════════════════════════════════════════════════════════
+
+⚠️ IMPORTANTE: Este cliente JÁ TEM CONTA no AgenteZap!
+NÃO TRATE como cliente novo. Pergunte se quer alterar algo ou precisa de ajuda.
+
+📊 DADOS DO CLIENTE:
+- Telefone: ${session.phoneNumber}
+- Email: ${existingUser.email}
+- ${agentInfo}
+- WhatsApp: ${connectionStatus}
+- Assinatura: ${subscriptionStatus}
+
+${agentPrompt ? `
+📝 RESUMO DO AGENTE CONFIGURADO:
+"${agentPrompt}"
+` : ''}
+
+═══════════════════════════════════════════════════════════════════════════════
+💬 COMO ABORDAR ESTE CLIENTE
+═══════════════════════════════════════════════════════════════════════════════
+
+OPÇÃO 1 - Saudação de retorno:
+"Oi! Você já tem uma conta com a gente! 😊 
+${agentName ? `Seu agente ${agentName} está configurado.` : 'Seu agente está configurado.'}
+Quer alterar algo no agente, ver como está funcionando, ou precisa de ajuda com alguma coisa?"
+
+OPÇÃO 2 - Se cliente mencionou problema:
+"Oi! Vi que você já tem conta aqui. Me conta o que está precisando que eu te ajudo!"
+
+═══════════════════════════════════════════════════════════════════════════════
+✅ O QUE VOCÊ PODE FAZER
+═══════════════════════════════════════════════════════════════════════════════
+
+1. ALTERAR AGENTE: Se cliente quer mudar nome, instruções, preço ou comportamento
+   → VOCÊ DEVE USAR A TAG [ACAO:CRIAR_CONTA_TESTE] PARA APLICAR A MUDANÇA!
+   → Ex: [ACAO:CRIAR_CONTA_TESTE empresa="Pizzaria" nome="Pizzaiolo" instrucoes="Novo nome é Pizza Veloce"]
+   → SEM A TAG, A MUDANÇA NÃO ACONTECE!
+
+2. VER SIMULADOR: Se cliente quer testar o agente atual
+   → Usar [ACAO:CRIAR_CONTA_TESTE] para gerar novo link do simulador
+
+3. SUPORTE: Se cliente tem problema técnico
+   → Ajudar com conexão, pagamento, etc.
+
+4. DESATIVAR/REATIVAR: Se cliente quer pausar o agente
+   → Orientar como fazer no painel
+
+❌ NÃO FAÇA:
+- NÃO pergunte tudo do zero como se fosse cliente novo
+- NÃO ignore que ele já tem conta
+- NÃO crie conta duplicada`;
+}
+
+/**
+ * Contexto para clientes ativos (já tem conta)
+ */
+async function getActiveClientContext(session: ClientSession): Promise<string> {
+  let connectionStatus = "⚠️ Não verificado";
+  let subscriptionStatus = "⚠️ Não verificado";
+  
+  if (session.userId) {
+    try {
+      const connection = await storage.getConnectionByUserId(session.userId);
+      connectionStatus = connection?.isConnected 
+        ? `✅ Conectado (${connection.phoneNumber})`
+        : "❌ Desconectado";
+    } catch {}
+    
+    try {
+      const sub = await storage.getUserSubscription(session.userId);
+      if (sub) {
+        const isActive = sub.status === 'active' || sub.status === 'trialing';
+        subscriptionStatus = isActive ? `✅ ${sub.status}` : `❌ ${sub.status}`;
+      }
+    } catch {}
+  }
+  
+  return `
+📋 ESTADO ATUAL: CLIENTE ATIVO (já tem conta)
+
+DADOS DA CONTA:
+- ID: ${session.userId}
+- Email: ${session.email}
+- WhatsApp: ${connectionStatus}
+- Assinatura: ${subscriptionStatus}
+
+✅ O QUE VOCÊ PODE FAZER:
+- Ajudar com problemas de conexão
+- Alterar configurações do agente (USE [ACAO:CRIAR_CONTA_TESTE])
+- Processar pagamentos
+- Resolver problemas técnicos
+- Ativar/desativar agente
+
+❌ NÃO FAÇA:
+- NÃO pergunte email novamente
+- NÃO inicie onboarding
+- NÃO explique tudo do zero`;
+}
+
+// ============================================================================
+// PROCESSADOR DE AÇÕES DA IA
+// ============================================================================
+
+interface ParsedAction {
+  type: string;
+  params: Record<string, string>;
+}
+
+interface ParsedFollowUp {
+  tempo: string;
+  motivo: string;
+}
+
+function parseActions(response: string): { cleanText: string; actions: ParsedAction[]; followUp?: ParsedFollowUp } {
+  const actionRegex = /\[(?:AÇÃO:|ACAO:)?([A-Z_]+)([^\]]*)\]/g;
+  const actions: ParsedAction[] = [];
+  let followUp: ParsedFollowUp | undefined;
+  
+  const validActions = [
+    "SALVAR_CONFIG",
+    "SALVAR_PROMPT",
+    "CRIAR_CONTA_TESTE",
+    "ENVIAR_PIX",
+    "NOTIFICAR_PAGAMENTO",
+    "AGENDAR_CONTATO",
+    "CRIAR_CONTA",
+  ];
+  
+  // Lista de nomes de empresa inválidos/placeholder que a IA pode inventar
+  const invalidCompanyNames = ['nome', 'empresa', 'minha empresa', 'meu negócio', 'meu empreendimento', 'my company', 'company', 'test', 'teste', 'agentezap', 'undefined', 'null', 'exemplo', 'sample'];
+  
+  let match;
+  while ((match = actionRegex.exec(response)) !== null) {
+    const type = match[1];
+    
+    if (!validActions.includes(type)) continue;
+    
+    const paramsStr = match[2];
+    const params: Record<string, string> = {};
+    
+    // Regex para capturar parâmetros com aspas duplas ou simples
+    const paramRegex = /(\w+)=(?:"([^"]*)"|'([^']*)')/g;
+    let paramMatch;
+    while ((paramMatch = paramRegex.exec(paramsStr)) !== null) {
+      const key = paramMatch[1];
+      const value = paramMatch[2] || paramMatch[3]; // Pega o grupo que deu match
+      params[key] = value;
+    }
+    
+    // VALIDAÇÃO CRÍTICA: Bloquear CRIAR_CONTA_TESTE com nomes placeholder
+    if (type === 'CRIAR_CONTA_TESTE') {
+      const empresaValue = (params.empresa || '').toLowerCase().trim();
+      if (!empresaValue || empresaValue.length < 3 || invalidCompanyNames.includes(empresaValue)) {
+        console.log(`🚫 [SALES] AÇÃO BLOQUEADA no parser: CRIAR_CONTA_TESTE com empresa inválida: "${params.empresa}"`);
+        continue; // Pula esta ação - não adiciona à lista
+      }
+    }
+    
+    actions.push({ type, params });
+    console.log(`🔧 [SALES] Ação detectada: ${type}`, params);
+  }
+  
+  // Parse follow-up tag: [FOLLOWUP:tempo="X" motivo="Y"]
+  const followUpRegex = /\[FOLLOWUP:([^\]]+)\]/gi;
+  const followUpMatch = followUpRegex.exec(response);
+  if (followUpMatch) {
+    const paramsStr = followUpMatch[1];
+    const tempoMatch = paramsStr.match(/tempo="([^"]*)"/);
+    const motivoMatch = paramsStr.match(/motivo="([^"]*)"/);
+    
+    if (tempoMatch || motivoMatch) {
+      followUp = {
+        tempo: tempoMatch?.[1] || "30 minutos",
+        motivo: motivoMatch?.[1] || "retomar conversa"
+      };
+      console.log(`⏰ [SALES] Follow-up solicitado pela IA: ${followUp.tempo} - ${followUp.motivo}`);
+    }
+  }
+  
+  // Limpar as tags da resposta (ACAO, FOLLOWUP)
+  let cleanText = response
+    .replace(/\[(?:AÇÃO:|ACAO:)?[A-Z_]+[^\]]*\]/gi, "")
+    .replace(/\[FOLLOWUP:[^\]]*\]/gi, "")
+    .trim();
+  
+  return { cleanText, actions, followUp };
+}
+
+/**
+ * Converte texto de tempo para minutos
+ * Ex: "30 minutos" -> 30, "2 horas" -> 120, "1 dia" -> 1440
+ */
+function parseTimeToMinutes(timeText: string): number {
+  const lower = timeText.toLowerCase().trim();
+  
+  // Extrair número
+  const numMatch = lower.match(/(\d+)/);
+  const num = numMatch ? parseInt(numMatch[1]) : 30;
+  
+  // Determinar unidade
+  if (lower.includes('hora')) return num * 60;
+  if (lower.includes('dia')) return num * 1440;
+  if (lower.includes('minuto')) return num;
+  
+  // Default: minutos
+  return num;
+}
+
+function buildFullPrompt(config: { name?: string; company?: string; role?: string; prompt?: string }): string {
+  return `Você é ${config.name || "o atendente"}, ${config.role || "atendente"} da ${config.company || "empresa"}.
+
+${config.prompt || ""}
+
+REGRAS:
+- Seja educado e prestativo
+- Respostas curtas e objetivas
+- Linguagem natural
+- Não invente informações
+- IMPORTANTE: Sempre se apresente com seu nome e empresa se perguntarem quem é, para não parecer robô. Ex: "Sou o ${config.name || "Atendente"} da ${config.company || "Empresa"}".`;
+}
+
+export async function executeActions(session: ClientSession, actions: ParsedAction[]): Promise<{
+  sendPix?: boolean;
+  notifyOwner?: boolean;
+  startTestMode?: boolean;
+  testAccountCredentials?: { email: string; password: string; loginUrl: string; simulatorToken?: string };
+}> {
+  const results: { 
+    sendPix?: boolean; 
+    notifyOwner?: boolean;
+    startTestMode?: boolean;
+    testAccountCredentials?: { email: string; password: string; loginUrl: string; simulatorToken?: string };
+  } = {};
+  
+  for (const action of actions) {
+    console.log(`🔧 [SALES] Executando ação: ${action.type}`, action.params);
+    
+    switch (action.type) {
+      case "SALVAR_CONFIG":
+        const agentConfig = { ...session.agentConfig };
+        
+        // Capture old values for replacement
+        const oldName = agentConfig.name;
+        const oldCompany = agentConfig.company;
+        const oldRole = agentConfig.role;
+
+        if (action.params.nome) agentConfig.name = action.params.nome;
+        if (action.params.empresa) agentConfig.company = action.params.empresa;
+        if (action.params.funcao) agentConfig.role = action.params.funcao;
+
+        // FIX: Update prompt text if name/company/role changed
+        if (agentConfig.prompt) {
+            let newPrompt = agentConfig.prompt;
+            let promptChanged = false;
+
+            if (oldName && action.params.nome && oldName !== action.params.nome) {
+                // Global replace of old name
+                newPrompt = newPrompt.split(oldName).join(action.params.nome);
+                promptChanged = true;
+            }
+            if (oldCompany && action.params.empresa && oldCompany !== action.params.empresa) {
+                newPrompt = newPrompt.split(oldCompany).join(action.params.empresa);
+                promptChanged = true;
+            }
+            if (oldRole && action.params.funcao && oldRole !== action.params.funcao) {
+                newPrompt = newPrompt.split(oldRole).join(action.params.funcao);
+                promptChanged = true;
+            }
+
+            if (promptChanged) {
+                agentConfig.prompt = newPrompt;
+                console.log(`📝 [SALES] Prompt atualizado automaticamente com novos dados.`);
+            }
+        }
+
+        updateClientSession(session.phoneNumber, { agentConfig });
+        console.log(`✅ [SALES] Config salva:`, agentConfig);
+
+        // FIX: Persistir no banco se o usuário já existir
+        if (session.userId) {
+          try {
+            const fullPrompt = buildFullPrompt(agentConfig);
+            await storage.updateAgentConfig(session.userId, {
+              prompt: fullPrompt
+            });
+            console.log(`💾 [SALES] Config (Prompt Completo) salva no DB para userId: ${session.userId}`);
+
+            // FIX: Atualizar também os tokens de teste ativos para refletir no Simulador
+            await updateUserTestTokens(session.userId, {
+              agentName: agentConfig.name,
+              company: agentConfig.company
+            });
+
+          } catch (err) {
+            console.error(`❌ [SALES] Erro ao salvar config no DB:`, err);
+          }
+        }
+        break;
+        
+      case "SALVAR_PROMPT":
+        if (action.params.prompt) {
+          const config = session.agentConfig || {};
+          config.prompt = action.params.prompt;
+          updateClientSession(session.phoneNumber, { agentConfig: config });
+          console.log(`✅ [SALES] Prompt salvo (${action.params.prompt.length} chars)`);
+
+          // FIX: Persistir no banco se o usuário já existir
+          if (session.userId) {
+            try {
+              const fullPrompt = buildFullPrompt(config);
+              await storage.updateAgentConfig(session.userId, {
+                prompt: fullPrompt
+              });
+              console.log(`💾 [SALES] Prompt salvo no DB para userId: ${session.userId}`);
+            } catch (err) {
+              console.error(`❌ [SALES] Erro ao salvar prompt no DB:`, err);
+            }
+          }
+        }
+        break;
+        
+      case "CRIAR_CONTA_TESTE":
+        // VALIDAÇÃO: Bloquear nomes de empresa genéricos/placeholder
+        const invalidCompanyNames = ['nome', 'empresa', 'minha empresa', 'meu negócio', 'my company', 'company', 'test', 'teste', 'agentezap', 'undefined', 'null', ''];
+        const companyName = (action.params.empresa || '').toLowerCase().trim();
+        
+        if (!companyName || companyName.length < 3 || invalidCompanyNames.includes(companyName)) {
+          console.log(`🚫 [SALES] BLOQUEADO: Tentativa de criar conta com nome inválido: "${action.params.empresa}"`);
+          // Não executar a ação - retornar sem criar conta
+          break;
+        }
+        
+        // Atualizar config se parâmetros foram passados na própria tag
+        if (action.params.empresa || action.params.nome || action.params.funcao || action.params.instrucoes) {
+          const agentConfig = { ...session.agentConfig };
+          if (action.params.nome) agentConfig.name = action.params.nome;
+          if (action.params.empresa) agentConfig.company = action.params.empresa;
+          if (action.params.funcao) agentConfig.role = action.params.funcao;
+          if (action.params.instrucoes) agentConfig.prompt = action.params.instrucoes;
+          updateClientSession(session.phoneNumber, { agentConfig });
+          console.log(`✅ [SALES] Config atualizada via CRIAR_CONTA_TESTE:`, agentConfig);
+        }
+
+        // Nova ação: criar conta de teste e retornar credenciais + token do simulador
+        const testResult = await createTestAccountWithCredentials(session);
+        if (testResult.success && testResult.email && testResult.password) {
+          results.testAccountCredentials = {
+            email: testResult.email,
+            password: testResult.password,
+            loginUrl: testResult.loginUrl || 'https://agentezap.online',
+            simulatorToken: testResult.simulatorToken
+          };
+          console.log(`🎉 [SALES] Conta de teste criada: ${testResult.email} (token: ${testResult.simulatorToken})`);
+        } else {
+          console.error(`❌ [SALES] Erro ao criar conta de teste:`, testResult.error);
+        }
+        break;
+        
+      case "ENVIAR_PIX":
+        updateClientSession(session.phoneNumber, { 
+          awaitingPaymentProof: true,
+          flowState: 'payment_pending'
+        });
+        results.sendPix = true;
+        break;
+        
+      case "NOTIFICAR_PAGAMENTO":
+        results.notifyOwner = true;
+        break;
+        
+      case "AGENDAR_CONTATO":
+        if (action.params.data) {
+          const scheduledDate = parseScheduleFromText(action.params.data);
+          if (scheduledDate) {
+            scheduleContact(session.phoneNumber, scheduledDate, action.params.motivo || 'Retorno agendado');
+            console.log(`📅 [SALES] Contato agendado para ${scheduledDate.toLocaleString('pt-BR')}`);
+          }
+        }
+        break;
+        
+      case "CRIAR_CONTA":
+        // Criar conta real (após pagamento)
+        if (action.params.email) {
+          updateClientSession(session.phoneNumber, { email: action.params.email });
+        }
+        const result = await createClientAccount(session);
+        if (result.success) {
+          updateClientSession(session.phoneNumber, { 
+            userId: result.userId,
+            flowState: 'active'
+          });
+        }
+        break;
+    }
+  }
+  
+  return results;
+}
+
+// ============================================================================
+// GERADOR DE RESPOSTA COM IA
+// ============================================================================
+
+export async function generateAIResponse(session: ClientSession, userMessage: string): Promise<string> {
+  try {
+    const mistral = await getMistralClient();
+    const systemPrompt = await getMasterPrompt(session);
+    
+    const messages: Array<{ role: "system" | "user" | "assistant"; content: string }> = [
+      { role: "system", content: systemPrompt },
+    ];
+    
+    // Adicionar histórico da conversa
+    const history = session.conversationHistory.slice(-30);
+    for (const msg of history) {
+      messages.push({
+        role: msg.role,
+        content: msg.content,
+      });
+    }
+    
+    // Only add userMessage if it's not already the last message in history
+    // (Avoids duplication since we added it to history just before calling this)
+    const lastMsg = history[history.length - 1];
+    const isDuplicate = lastMsg && lastMsg.role === 'user' && lastMsg.content.trim() === userMessage.trim();
+    
+    if (!isDuplicate) {
+        messages.push({ role: "user", content: userMessage });
+    }
+    
+    console.log(`🤖 [SALES] Gerando resposta para: "${userMessage.substring(0, 50)}..." (state: ${session.flowState})`);
+    
+    const configuredModel = await getConfiguredModel();
+    let response;
+    
+    // 🎯 TOKENS SEM LIMITE - A divisão em partes é feita depois pelo splitMessageHumanLike
+    // Isso garante que NENHUM conteúdo seja cortado - apenas dividido em blocos
+    const maxTokens = 2000; // ~6000 chars - permite respostas completas
+    
+    try {
+      response = await mistral.chat.complete({
+        model: configuredModel,
+        messages: messages,
+        maxTokens: maxTokens,
+        temperature: 0.85,
+      });
+    } catch (err: any) {
+      // Fallback para modelo menor em caso de erro de capacidade (429) ou modelo não encontrado
+      if (err?.statusCode === 429 || err?.message?.includes('capacity exceeded') || err?.message?.includes('not found')) {
+        console.warn(`⚠️ [SALES] Erro com modelo ${configuredModel} (${err.statusCode}). Tentando fallback para mistral-small-latest...`);
+        try {
+          response = await mistral.chat.complete({
+            model: "mistral-small-latest",
+            messages: messages,
+            maxTokens: maxTokens,
+            temperature: 0.85,
+          });
+        } catch (fallbackErr) {
+           console.error(`❌ [SALES] Erro também no fallback:`, fallbackErr);
+           throw err; // Lança o erro original se o fallback falhar
+        }
+      } else {
+        throw err;
+      }
+    }
+    
+    const responseText = response.choices?.[0]?.message?.content;
+    
+    if (!responseText) {
+      return "Opa, deu um problema aqui. Pode mandar de novo?";
+    }
+    
+    return typeof responseText === "string" ? responseText : String(responseText);
+  } catch (error) {
+    console.error("[SALES] Erro ao gerar resposta:", error);
+    return "Desculpa, tive um problema técnico. Pode repetir?";
+  }
+}
+
+// ============================================================================
+// PROCESSADOR PRINCIPAL DE MENSAGENS
+// ============================================================================
+
+export interface AdminAgentResponse {
+  text: string;
+  mediaActions?: Array<{
+    type: 'send_media';
+    media_name: string;
+    mediaData?: AdminMedia;
+  }>;
+  actions?: {
+    sendPix?: boolean;
+    notifyOwner?: boolean;
+    startTestMode?: boolean;
+    testAccountCredentials?: { email: string; password: string; loginUrl: string };
+  };
+}
+
+async function getAdminAgentConfig(): Promise<{
+  triggerPhrases: string[];
+  messageSplitChars: number;
+  responseDelaySeconds: number;
+  isActive: boolean;
+  promptStyle: "nuclear" | "human";
+}> {
+  try {
+    const triggerPhrasesConfig = await storage.getSystemConfig("admin_agent_trigger_phrases");
+    const splitCharsConfig = await storage.getSystemConfig("admin_agent_message_split_chars");
+    const delayConfig = await storage.getSystemConfig("admin_agent_response_delay_seconds");
+    const isActiveConfig = await storage.getSystemConfig("admin_agent_is_active");
+    const promptStyleConfig = await storage.getSystemConfig("admin_agent_prompt_style");
+    
+    let triggerPhrases: string[] = [];
+    if (triggerPhrasesConfig?.valor) {
+      try {
+        const parsed = JSON.parse(triggerPhrasesConfig.valor);
+        if (Array.isArray(parsed)) {
+          triggerPhrases = parsed;
+        } else {
+          triggerPhrases = [];
+        }
+      } catch {
+        // Fallback: se falhar o parse JSON, tentar usar como string crua (separada por vírgula)
+        // Isso corrige o bug onde uma string simples salva no banco era ignorada, ativando o modo "no-filter"
+        const raw = triggerPhrasesConfig.valor.trim();
+        if (raw.length > 0) {
+          if (raw.includes(',')) {
+            triggerPhrases = raw.split(',').map(s => s.trim()).filter(s => s.length > 0);
+          } else {
+            triggerPhrases = [raw];
+          }
+        } else {
+          triggerPhrases = [];
+        }
+      }
+    }
+    
+    return {
+      triggerPhrases,
+      messageSplitChars: parseInt(splitCharsConfig?.valor || "400", 10),
+      responseDelaySeconds: parseInt(delayConfig?.valor || "30", 10),
+      isActive: isActiveConfig?.valor === "true",
+      promptStyle: (promptStyleConfig?.valor as "nuclear" | "human") || "nuclear",
+    };
+  } catch (error) {
+    console.error("[SALES] Erro ao carregar config, usando defaults:", error);
+    return {
+      triggerPhrases: [],
+      messageSplitChars: 400,
+      responseDelaySeconds: 30,
+      isActive: true,
+      promptStyle: "nuclear",
+    };
+  }
+}
+
+function checkTriggerPhrases(
+  message: string,
+  conversationHistory: Array<{ content: string }>,
+  triggerPhrases: string[]
+): { hasTrigger: boolean; foundIn: string } {
+  console.log(`🔍 [TRIGGER CHECK] Iniciando verificação`);
+  console.log(`   - Frases configuradas: ${JSON.stringify(triggerPhrases)}`);
+  console.log(`   - Mensagem atual: "${message}"`);
+  console.log(`   - Histórico: ${conversationHistory.length} mensagens`);
+
+  if (!triggerPhrases || triggerPhrases.length === 0) {
+    console.log(`   ✅ [TRIGGER CHECK] Lista vazia = Aprovado (no-filter)`);
+    return { hasTrigger: true, foundIn: "no-filter" };
+  }
+  
+  const normalize = (s: string) => (s || "")
+    .toLowerCase()
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  const allMessages = [
+    ...conversationHistory.map(m => m.content || ""),
+    message
+  ].join(" ");
+
+  let foundIn = "none";
+  const hasTrigger = triggerPhrases.some(phrase => {
+    const normPhrase = normalize(phrase);
+    const normMsg = normalize(message);
+    const normAll = normalize(allMessages);
+
+    const inLast = normMsg.includes(normPhrase);
+    const inAll = inLast ? false : normAll.includes(normPhrase);
+    
+    if (inLast) {
+        console.log(`   ✅ [TRIGGER CHECK] Encontrado na mensagem atual: "${phrase}"`);
+        foundIn = "last"; 
+    } else if (inAll) {
+        console.log(`   ✅ [TRIGGER CHECK] Encontrado no histórico: "${phrase}"`);
+        foundIn = "history";
+    }
+    
+    return inLast || inAll;
+  });
+
+  if (!hasTrigger) {
+      console.log(`   ❌ [TRIGGER CHECK] Nenhuma frase encontrada.`);
+  }
+
+  return { hasTrigger, foundIn };
+}
+
+export async function processAdminMessage(
+  phoneNumber: string,
+  messageText: string,
+  mediaType?: string,
+  mediaUrl?: string,
+  skipTriggerCheck: boolean = false,
+  contactName?: string  // Nome do cliente (pushName do WhatsApp)
+): Promise<AdminAgentResponse | null> {
+  const cleanPhone = phoneNumber.replace(/\D/g, "");
+  
+  // ═══════════════════════════════════════════════════════════════════════════
+  // COMANDOS ESPECIAIS
+  // ═══════════════════════════════════════════════════════════════════════════
+  
+  // #limpar, #reset, #novo - Limpar sessão para testes
+  if (messageText.match(/^#(limpar|reset|novo)$/i)) {
+    clearClientSession(cleanPhone);
+    return {
+      text: "✅ Sessão limpa! Agora você pode testar novamente como se fosse um cliente novo.",
+      actions: {},
+    };
+  }
+  
+  // Obter ou criar sessão
+  let session = getClientSession(cleanPhone);
+  if (!session) {
+    session = createClientSession(cleanPhone);
+  }
+  
+  // Atualizar nome do cliente na sessão se fornecido
+  if (contactName && (!session.contactName || session.contactName !== contactName)) {
+    updateClientSession(cleanPhone, { contactName });
+    session.contactName = contactName;
+  }
+  
+  // #sair - Sair do modo de teste
+  if (messageText.match(/^#sair$/i) && session.flowState === 'test_mode') {
+    updateClientSession(cleanPhone, { flowState: 'post_test' });
+    cancelFollowUp(cleanPhone);
+    
+    return {
+      text: "Saiu do modo de teste! 🎭\n\nE aí, o que achou? Gostou de como o agente atendeu? 😊",
+      actions: {},
+    };
+  }
+  
+  // ═══════════════════════════════════════════════════════════════════════════
+  // CANCELAR FOLLOW-UP SE CLIENTE RESPONDEU
+  // ═══════════════════════════════════════════════════════════════════════════
+  cancelFollowUp(cleanPhone);
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // EXCLUSÃO DE MÍDIA (VIA COMANDO)
+  // ═══════════════════════════════════════════════════════════════════════════
+  const deleteMatch = messageText.match(/^(?:excluir|remover|apagar|tirar)\s+(?:a\s+)?imagem\s+(?:do\s+|da\s+|de\s+)?(.+)$/i);
+  if (deleteMatch) {
+    const trigger = deleteMatch[1].trim();
+    
+    // FIX: Buscar mídias do AGENTE DO USUÁRIO, não do Admin
+    // Se o usuário já tem conta, buscar no banco
+    let targetMediaId: string | undefined;
+    let targetMediaDesc: string | undefined;
+
+    if (session.userId) {
+        const { agentMediaLibrary } = await import("@shared/schema");
+        const { eq, and } = await import("drizzle-orm");
+        const { db } = await import("./db");
+
+        // Buscar todas as mídias do usuário
+        const userMedia = await db.select().from(agentMediaLibrary).where(eq(agentMediaLibrary.userId, session.userId));
+        
+        const found = userMedia.find(m => {
+            const t = trigger.toLowerCase();
+            const when = (m.whenToUse || '').toLowerCase();
+            const desc = (m.description || '').toLowerCase();
+            const name = (m.name || '').toLowerCase();
+            
+            return when.includes(t) || desc.includes(t) || name.includes(t) || t.includes(when);
+        });
+
+        if (found) {
+            targetMediaId = found.id;
+            targetMediaDesc = found.description || found.name;
+            
+            // Remover do banco
+            await db.delete(agentMediaLibrary).where(eq(agentMediaLibrary.id, found.id));
+            console.log(`🗑️ [SALES] Mídia ${found.id} removida do banco para usuário ${session.userId}`);
+        }
+    } else {
+        // Se não tem conta, remover da sessão em memória
+        if (session.uploadedMedia) {
+            const idx = session.uploadedMedia.findIndex(m => 
+                (m.whenToUse && m.whenToUse.toLowerCase().includes(trigger.toLowerCase())) || 
+                (m.description && m.description?.toLowerCase().includes(trigger.toLowerCase()))
+            );
+            
+            if (idx !== -1) {
+                targetMediaDesc = session.uploadedMedia[idx].description;
+                session.uploadedMedia.splice(idx, 1);
+                updateClientSession(cleanPhone, { uploadedMedia: session.uploadedMedia });
+                console.log(`🗑️ [SALES] Mídia removida da memória para ${cleanPhone}`);
+                targetMediaId = "memory"; // Flag de sucesso
+            }
+        }
+    }
+
+    if (targetMediaId) {
+      try {
+        // 2. Atualizar Prompt do Agente (remover a linha)
+        // Se tem usuário, atualizar no banco
+        if (session.userId) {
+            const currentConfig = await storage.getAgentConfig(session.userId);
+            if (currentConfig && currentConfig.prompt) {
+                const lines = currentConfig.prompt.split('\n');
+                const newLines = lines.filter(line => {
+                    // Remove linhas que parecem ser blocos de mídia e contêm o termo
+                    if (line.includes('[MÍDIA:') && line.toLowerCase().includes(trigger.toLowerCase())) return false;
+                    return true;
+                });
+                
+                if (lines.length !== newLines.length) {
+                    await storage.updateAgentConfig(session.userId, { prompt: newLines.join('\n') });
+                    console.log(`📝 [SALES] Prompt atualizado (mídia removida) para ${session.userId}`);
+                }
+            }
+        }
+        
+        // Atualizar prompt em memória também
+        if (session.agentConfig && session.agentConfig.prompt) {
+             const lines = session.agentConfig.prompt.split('\n');
+             const newLines = lines.filter(line => {
+                if (line.includes('[MÍDIA:') && line.toLowerCase().includes(trigger.toLowerCase())) return false;
+                return true;
+             });
+             session.agentConfig.prompt = newLines.join('\n');
+             updateClientSession(cleanPhone, { agentConfig: session.agentConfig });
+        }
+
+        return {
+          text: `✅ Imagem "${trigger}" removida com sucesso!`,
+          actions: {},
+        };
+      } catch (err) {
+        console.error("❌ [ADMIN] Erro ao excluir mídia:", err);
+        return {
+          text: "❌ Ocorreu um erro ao excluir a mídia.",
+          actions: {},
+        };
+      }
+    } else {
+      return {
+        text: `⚠️ Não encontrei nenhuma imagem configurada para "${trigger}".`,
+        actions: {},
+      };
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // FLUXO DE CADASTRO DE MÍDIA (VIA WHATSAPP)
+  // ═══════════════════════════════════════════════════════════════════════════
+  
+  // 1. Recebimento do Contexto (Resposta do usuário) - etapa 1: candidato
+  if (session.awaitingMediaContext && session.pendingMedia && (!mediaType || mediaType === 'text')) {
+    const context = (messageText || '').trim();
+    const media = session.pendingMedia;
+
+    console.log(`📸 [ADMIN] Recebido candidato de uso para mídia: "${context}"`);
+
+    // ------------------------------------------------------------------
+    // REFINAMENTO DE TRIGGER COM IA
+    // ------------------------------------------------------------------
+    let refinedTrigger = context;
+    try {
+        const mistral = await getMistralClient();
+        const extractionPrompt = `
+        CONTEXTO: O usuário (dono do bot) enviou uma imagem e, ao ser perguntado quando ela deve ser usada, respondeu: "${context}".
+        
+        TAREFA: Extraia as palavras-chave (triggers) que os CLIENTES FINAIS usarão para solicitar essa imagem.
+        
+        REGRAS:
+        1. Ignore comandos do admin (ex: "veja o cardápio" -> trigger é "cardápio").
+        2. Expanda sinônimos óbvios (ex: "preço" -> "preço, valor, quanto custa").
+        3. Retorne APENAS as palavras-chave separadas por vírgula.
+        4. Se a resposta for muito genérica ou não fizer sentido, retorne o texto original.
+        
+        Exemplo 1: Admin diz "quando pedirem pix" -> Retorno: "pix, chave pix, pagamento"
+        Exemplo 2: Admin diz "veja o cardápio" -> Retorno: "cardápio, menu, pratos, o que tem pra comer"
+        Exemplo 3: Admin diz "tabela" -> Retorno: "tabela, preços, valores"
+        `;
+        
+        const extraction = await mistral.chat.complete({
+            model: "mistral-small-latest",
+            messages: [{ role: "user", content: extractionPrompt }],
+            temperature: 0.1,
+            maxTokens: 100
+        });
+        
+        const result = (extraction.choices?.[0]?.message?.content || "").trim();
+        if (result && result.length > 2 && !result.includes("contexto")) {
+            refinedTrigger = result.replace(/\.$/, "");
+            console.log(`✨ [ADMIN] Trigger refinado por IA: "${context}" -> "${refinedTrigger}"`);
+        }
+    } catch (err) {
+        console.error("⚠️ [ADMIN] Erro ao refinar trigger:", err);
+    }
+    // ------------------------------------------------------------------
+
+    // Armazenar candidato e solicitar confirmação explícita
+    const updatedPending = {
+      ...media,
+      whenCandidate: refinedTrigger,
+    };
+
+    updateClientSession(cleanPhone, {
+      pendingMedia: updatedPending,
+      awaitingMediaContext: false,
+      awaitingMediaConfirmation: true,
+    });
+
+    // Passa para a IA decidir como confirmar naturalmente
+    const confirmContext = `[SISTEMA: O admin enviou uma imagem (${media.description}).
+    Ele disse: "${context}".
+    Eu interpretei que devemos enviar essa imagem quando o cliente falar: "${refinedTrigger}".
+    
+    SUA TAREFA:
+    1. Confirme se é isso mesmo.
+    2. Dê exemplos de como o cliente pediria, baseados no trigger refinado.
+    3. Seja natural.
+    
+    Exemplo: "Entendi! Então quando perguntarem sobre cardápio ou menu, eu mando essa foto, pode ser?"
+    ]`;
+    addToConversationHistory(cleanPhone, "user", confirmContext);
+    
+    const aiResponse = await generateAIResponse(session, confirmContext);
+    const { cleanText } = parseActions(aiResponse);
+    addToConversationHistory(cleanPhone, "assistant", cleanText);
+    
+    return {
+      text: cleanText,
+      actions: {},
+    };
+  }
+
+  // 1b. Confirmação do admin para salvar a mídia
+  if (session.awaitingMediaConfirmation && session.pendingMedia && (!mediaType || mediaType === 'text')) {
+    const reply = (messageText || '').trim().toLowerCase();
+    const media = session.pendingMedia;
+
+    // Resposta afirmativa
+    if (/^(sim|s|ok|confirmar|confirm|yes|isso|exato|pode|beleza|blz|bora|vai|fechou|perfeito|correto|certo)$/i.test(reply)) {
+      // Buscar admin para associar a mídia (assumindo single-tenant ou primeiro admin)
+      const admins = await storage.getAllAdmins();
+      const adminId = admins[0]?.id;
+
+      if (adminId) {
+        try {
+          const whenToUse = (media as any).whenCandidate || '';
+
+          // Salvar no banco (Admin Media)
+          // DESATIVADO: Não salvar mídias de clientes na biblioteca do Admin
+          /*
+          await storage.createAdminMedia({
+            adminId,
+            name: `MEDIA_${Date.now()}`,
+            mediaType: media.type,
+            storageUrl: media.url,
+            description: media.description || "Imagem enviada via WhatsApp",
+            whenToUse: whenToUse,
+            isActive: true,
+            sendAlone: false,
+            displayOrder: 0,
+          });
+          */
+
+          // Salvar também na biblioteca do usuário (Agent Media) para que funcione no teste
+          const userId = session.userId;
+          console.log(`🔍 [ADMIN] Verificando userId da sessão: ${userId}`);
+          
+          if (!userId) {
+            console.log(`⚠️ [ADMIN] userId não encontrado na sessão! Salvando em memória para associar na criação da conta.`);
+            const currentUploaded = session.uploadedMedia || [];
+            currentUploaded.push({
+                url: media.url,
+                type: media.type,
+                description: media.description || "Imagem enviada via WhatsApp",
+                whenToUse: whenToUse
+            });
+            updateClientSession(cleanPhone, { uploadedMedia: currentUploaded });
+          } else {
+             const mediaData = {
+                userId: userId,
+                name: `MEDIA_${Date.now()}`,
+                mediaType: media.type,
+                storageUrl: media.url,
+                description: media.description || "Imagem enviada via WhatsApp",
+                whenToUse: whenToUse,
+                isActive: true,
+                sendAlone: false,
+                displayOrder: 0,
+             };
+             console.log(`📸 [ADMIN] Salvando mídia para usuário ${userId}:`, mediaData);
+             await insertAgentMedia(mediaData);
+             console.log(`✅ [ADMIN] Mídia salva com sucesso na agent_media_library!`);
+          }
+
+          // Atualizar Prompt do Agente
+          const currentPromptConfig = await storage.getSystemConfig("admin_agent_prompt");
+          const currentPrompt = currentPromptConfig?.valor || "";
+          const newInstruction = `\n[MÍDIA: ${media.description} (URL: ${media.url}). QUANDO USAR: ${whenToUse}]`;
+          await storage.updateSystemConfig("admin_agent_prompt", currentPrompt + newInstruction);
+
+          // Limpar estado
+          updateClientSession(cleanPhone, { pendingMedia: undefined, awaitingMediaConfirmation: false });
+
+          // Gerar resposta natural da IA sobre o sucesso
+          const successContext = `[SISTEMA: A imagem foi salva! Descrição: "${media.description}", vai ser enviada quando: "${whenToUse}". Avisa pro admin de forma casual que tá pronto, tipo "fechou, tá configurado" ou "show, agora quando perguntarem sobre isso já vai a foto". Não use ✅ nem linguagem de bot.]`;
+          addToConversationHistory(cleanPhone, "user", successContext);
+          
+          const aiResponse = await generateAIResponse(session, successContext);
+          const { cleanText } = parseActions(aiResponse);
+          addToConversationHistory(cleanPhone, "assistant", cleanText);
+          
+          return {
+            text: cleanText,
+            actions: {},
+          };
+        } catch (err) {
+          console.error("❌ [ADMIN] Erro ao salvar mídia:", err);
+          return {
+            text: "Ops, deu um probleminha ao salvar. Tenta de novo? 😅",
+            actions: {},
+          };
+        }
+      }
+    }
+
+    // Resposta negativa ou outra qualquer => cancelar
+    updateClientSession(cleanPhone, { pendingMedia: undefined, awaitingMediaConfirmation: false });
+    
+    // Gerar resposta natural da IA sobre o cancelamento
+    const cancelContext = `[SISTEMA: O admin não confirmou ou mudou de ideia sobre a imagem. Responde de boa, pergunta se quer fazer diferente ou se precisa de outra coisa. Sem drama, casual.]`;
+    addToConversationHistory(cleanPhone, "user", cancelContext);
+    
+    const aiResponse = await generateAIResponse(session, cancelContext);
+    const { cleanText } = parseActions(aiResponse);
+    addToConversationHistory(cleanPhone, "assistant", cleanText);
+    
+    return {
+      text: cleanText,
+      actions: {},
+    };
+  }
+
+  // 2. Recebimento da Imagem
+  if (mediaType === 'image' && mediaUrl && !session.awaitingPaymentProof) {
+    console.log(`📸 [ADMIN] Recebida imagem de ${cleanPhone}. Analisando com Vision...`);
+
+    // Tentar análise especializada para admin (summary + description)
+    const analysis = await analyzeImageForAdmin(mediaUrl).catch(() => null);
+    const summary = analysis?.summary || '';
+    const description = analysis?.description || (await analyzeImageWithMistral(mediaUrl).catch(() => '')) || '';
+
+    const pendingMedia = {
+      url: mediaUrl,
+      type: 'image' as const,
+      description,
+      summary,
+    };
+
+    // AUTO-DETECT MEDIA CONTEXT (SMART CLASSIFICATION)
+    // Tenta entender se a imagem enviada responde a uma solicitação anterior do agente
+    let autoDetectedTrigger: string | null = null;
+    
+    if (session.flowState === 'onboarding' || !session.userId) {
+        try {
+            // Pegar última mensagem do assistente para contexto
+            const lastAssistantMsg = [...session.conversationHistory].reverse().find(m => m.role === 'assistant')?.content || "";
+            
+            console.log(`🧠 [ADMIN] Classificando mídia com IA... Contexto: "${lastAssistantMsg.substring(0, 50)}..."`);
+            
+            const classificationPrompt = `
+            CONTEXTO: Você é um classificador de intenção.
+            O assistente (vendedor) perguntou: "${lastAssistantMsg}"
+            O usuário enviou uma imagem descrita como: "${description} / ${summary}"
+            
+            TAREFA:
+            Essa imagem parece ser o material principal que o assistente pediu (ex: cardápio, catálogo, tabela de preços, portfólio)?
+            
+            SE SIM: Retorne APENAS uma lista de palavras-chave (triggers) separadas por vírgula que um cliente usaria para pedir isso.
+            SE NÃO (ou se não tiver certeza): Retorne APENAS a palavra "NULL".
+            
+            Exemplos:
+            - Se pediu cardápio e imagem é menu -> "cardápio, menu, ver pratos, o que tem pra comer"
+            - Se pediu tabela e imagem é lista de preços -> "preços, valores, quanto custa, tabela"
+            - Se pediu foto da loja e imagem é fachada -> "NULL" (pois não é material de envio recorrente para clientes)
+            `;
+            
+            const mistral = await getMistralClient();
+            const classification = await mistral.chat.complete({
+                model: "mistral-small-latest",
+                messages: [{ role: "user", content: classificationPrompt }],
+                temperature: 0.1,
+                maxTokens: 50
+            });
+            
+            const result = (classification.choices?.[0]?.message?.content || "").trim();
+            if (result && !result.includes("NULL") && result.length > 3) {
+                autoDetectedTrigger = result.replace(/\.$/, ""); // Remove ponto final se houver
+                console.log(`✅ [ADMIN] Mídia classificada automaticamente! Trigger: "${autoDetectedTrigger}"`);
+            }
+        } catch (err) {
+            console.error("⚠️ [ADMIN] Erro na classificação automática de mídia:", err);
+        }
+    }
+    
+    if (autoDetectedTrigger) {
+        console.log(`📸 [ADMIN] Mídia auto-detectada! Salvando automaticamente.`);
+        
+        const currentUploaded = session.uploadedMedia || [];
+        currentUploaded.push({
+            url: mediaUrl,
+            type: 'image',
+            description: description || "Mídia enviada",
+            whenToUse: autoDetectedTrigger
+        });
+        updateClientSession(cleanPhone, { uploadedMedia: currentUploaded, pendingMedia: undefined, awaitingMediaContext: false });
+        
+        const autoSaveContext = `[SISTEMA: O usuário enviou uma imagem.
+        ✅ IDENTIFIQUEI AUTOMATICAMENTE QUE É: "${description}".
+        ✅ JÁ SALVEI PARA SER ENVIADA QUANDO CLIENTE FALAR: "${autoDetectedTrigger}".
+        
+        SUA AÇÃO:
+        1. Confirme o recebimento com entusiasmo.
+        2. NÃO pergunte "quando devo usar" (já configurei).
+        3. Pergunte a PRÓXIMA informação necessária para configurar o agente (Horário? Pagamento? Endereço?).
+        
+        Seja breve e natural.]`;
+        
+        addToConversationHistory(cleanPhone, "user", autoSaveContext);
+        const aiResponse = await generateAIResponse(session, autoSaveContext);
+        const { cleanText } = parseActions(aiResponse);
+        addToConversationHistory(cleanPhone, "assistant", cleanText);
+
+        return {
+          text: cleanText,
+          actions: {},
+        };
+    }
+
+    updateClientSession(cleanPhone, {
+      pendingMedia,
+      awaitingMediaContext: true,
+      awaitingMediaConfirmation: false,
+    });
+
+    // Passar para IA decidir como perguntar sobre a imagem - SEM TEMPLATES
+    const imageContext = `[SISTEMA: O usuário enviou uma imagem. Análise visual: "${description || 'uma imagem'}".
+    
+    SUA MISSÃO AGORA:
+    1. Se você tinha pedido o cardápio ou foto: Diga que recebeu e achou legal. NÃO pergunte "quando usar" se for óbvio (ex: cardápio é pra quando pedirem cardápio). Já assuma que é isso e pergunte a PRÓXIMA informação necessária (horário, pagamento, etc).
+    2. Se foi espontâneo: Comente o que viu e pergunte se é pra enviar pros clientes quando perguntarem algo específico.
+    
+    Seja natural. Não use "Recebi a imagem". Fale como gente.]`;
+    
+    addToConversationHistory(cleanPhone, "user", imageContext);
+    const aiResponse = await generateAIResponse(session, imageContext);
+    const { cleanText } = parseActions(aiResponse);
+    addToConversationHistory(cleanPhone, "assistant", cleanText);
+
+    return {
+      text: cleanText,
+      actions: {},
+    };
+  }
+
+  
+  // Buscar configurações
+  const adminConfig = await getAdminAgentConfig();
+  
+  // Carregar histórico do banco se sessão vazia E não foi limpo manualmente
+  if (session.conversationHistory.length === 0 && !clearedPhones.has(cleanPhone)) {
+    try {
+      const conversation = await storage.getAdminConversationByPhone(cleanPhone);
+      if (conversation) {
+        const messages = await storage.getAdminMessages(conversation.id);
+        
+        // Filter out recent user messages that are likely part of the current accumulated batch
+        // to avoid duplication (since they will be added as the current message)
+        const now = new Date();
+        const filteredMessages = messages.filter((msg: any) => {
+            if (msg.fromMe) return true; // Keep assistant messages
+            
+            const msgTime = new Date(msg.timestamp);
+            const secondsDiff = (now.getTime() - msgTime.getTime()) / 1000;
+            
+            // If message is recent (< 60s) and its content is part of the current accumulated text,
+            // assume it's already being processed in this batch
+            if (secondsDiff < 60) {
+                const msgContent = (msg.text || "").trim();
+                const currentContent = messageText.trim();
+                if (msgContent && currentContent.includes(msgContent)) {
+                    return false;
+                }
+            }
+            return true;
+        });
+
+        session.conversationHistory = filteredMessages.slice(-30).map((msg: any) => ({
+          role: (msg.fromMe ? "assistant" : "user") as "user" | "assistant",
+          content: msg.text || "",
+          timestamp: msg.timestamp || new Date(),
+        }));
+        console.log(`📚 [SALES] ${session.conversationHistory.length} mensagens restauradas do banco (filtradas de ${messages.length})`);
+      }
+    } catch {}
+  }
+  
+  // Verificar trigger phrases (exceto em modo de teste)
+  if (!skipTriggerCheck && session.flowState !== 'test_mode') {
+    console.log(`🔍 [DEBUG] Verificando trigger para ${cleanPhone}`);
+    console.log(`   - Frases configuradas: ${JSON.stringify(adminConfig.triggerPhrases)}`);
+    console.log(`   - Histórico sessão: ${session.conversationHistory.length} msgs`);
+    console.log(`   - Sessão limpa recentemente: ${clearedPhones.has(cleanPhone)}`);
+    console.log(`   - Mensagem atual: "${messageText}"`);
+
+    const triggerResult = checkTriggerPhrases(
+      messageText,
+      session.conversationHistory,
+      adminConfig.triggerPhrases
+    );
+    
+    console.log(`   - Resultado verificação:`, triggerResult);
+
+    if (!triggerResult.hasTrigger) {
+      console.log(`⏸️ [SALES] Sem trigger para ${cleanPhone}`);
+      addToConversationHistory(cleanPhone, "user", messageText);
+      return null;
+    }
+  }
+  
+  // Adicionar mensagem ao histórico
+  let historyContent = messageText;
+  if (mediaType && mediaType !== 'text' && mediaType !== 'chat') {
+    historyContent += `\n[SISTEMA: O usuário enviou uma mídia do tipo ${mediaType}. Se for imagem/áudio sem contexto, pergunte o que é (ex: catálogo, foto de produto, etc).]`;
+  }
+  addToConversationHistory(cleanPhone, "user", historyContent);
+  
+  // Verificar comprovante de pagamento
+  if (mediaType === "image" && session.awaitingPaymentProof) {
+    let text = "Recebi a imagem! Vou analisar...";
+    let isPaymentProof = false;
+
+    if (mediaUrl) {
+      console.log(`🔍 [ADMIN] Analisando imagem de pagamento para ${cleanPhone}...`);
+      const analysis = await analyzeImageForAdmin(mediaUrl);
+      
+      if (analysis) {
+        console.log(`🔍 [ADMIN] Resultado Vision:`, analysis);
+        const keywords = ["comprovante", "pagamento", "pix", "transferencia", "recibo", "banco", "valor", "r$", "sucesso"];
+        const combinedText = (analysis.summary + " " + analysis.description).toLowerCase();
+        
+        // Verificar se tem palavras-chave de pagamento
+        if (keywords.some(k => combinedText.includes(k))) {
+          isPaymentProof = true;
+        }
+      }
+    }
+
+    if (isPaymentProof) {
+      text = "Recebi seu comprovante e identifiquei o pagamento! 🎉 Sua conta foi liberada automaticamente. Agora você já pode acessar o painel e conectar seu WhatsApp!";
+      
+      // Atualizar status do usuário para ativo (se existir conta)
+      if (session.userId) {
+        // TODO: Atualizar status no banco (precisa de método no storage ou update direto)
+        // Por enquanto, vamos apenas notificar e limpar o flag
+        // await storage.updateUserStatus(session.userId, 'active'); // Exemplo
+      }
+      
+      updateClientSession(cleanPhone, { awaitingPaymentProof: false });
+      
+      return {
+        text,
+        actions: { notifyOwner: true }, // Notificar admin mesmo assim
+      };
+    } else {
+      // Se não parece comprovante, agradece mas mantém o flag (ou pergunta se é o comprovante)
+      // Mas como o usuário pediu "se enviou imagem de pagamento a ia idetnfica... e ja coloca como pago",
+      // vamos assumir que se NÃO identificou, tratamos como imagem normal ou pedimos confirmação.
+      // Para não travar o fluxo, vamos aceitar mas avisar que vai para análise manual.
+      text = "Recebi a imagem! Não consegui identificar automaticamente como um comprovante de PIX, mas enviei para nossa equipe verificar. Em breve liberamos seu acesso! 🕒";
+      updateClientSession(cleanPhone, { awaitingPaymentProof: false });
+      
+      return {
+        text,
+        actions: { notifyOwner: true },
+      };
+    }
+  }
+  
+  // Gerar resposta com IA
+  const aiResponse = await generateAIResponse(session, historyContent);
+  console.log(`🤖 [SALES] Resposta: ${aiResponse.substring(0, 200)}...`);
+  
+  // Parse ações e follow-up
+  const { cleanText: textWithoutActions, actions, followUp } = parseActions(aiResponse);
+  
+  // FALLBACK: Se a IA esqueceu de colocar a tag de mídia, vamos tentar detectar pelo contexto
+  let textForMediaParsing = textWithoutActions;
+  const lowerText = textWithoutActions.toLowerCase();
+  
+  // Regras de fallback (hardcoded para garantir funcionamento)
+  
+  // Definição de gatilhos de fallback (Sincronizado com adminMediaStore)
+  const { getSmartTriggers } = await import("./adminMediaStore");
+  const fallbackTriggers = await getSmartTriggers(undefined);
+
+  // 1. Tentar corrigir tag quebrada no final (ex: [ENVIAR_ ou [ENVIAR)
+  const brokenTagRegex = /\[ENVIAR_?$/i;
+  if (brokenTagRegex.test(textForMediaParsing)) {
+      console.log('🔧 [SALES] Fallback: Corrigindo tag quebrada no final');
+      // Remove a tag quebrada
+      textForMediaParsing = textForMediaParsing.replace(brokenTagRegex, '').trim();
+      
+      // Tentar encontrar qual mídia era baseada no contexto
+      for (const trigger of fallbackTriggers) {
+          if (trigger.keywords.some(k => lowerText.includes(k))) {
+               // Verificar se a mídia existe antes de adicionar
+               const media = await getAdminMediaByName(undefined, trigger.mediaName);
+               if (media) {
+                   console.log(`🔧 [SALES] Fallback: Completando tag para ${trigger.mediaName}`);
+                   textForMediaParsing += ` [ENVIAR_MIDIA:${trigger.mediaName}]`;
+                   break; // Só adiciona uma
+               }
+          }
+      }
+  }
+
+  // 2. Se ainda não tem tag válida, verificar keywords (IA esqueceu completamente)
+  const hasMediaTag = /\[ENVIAR_MIDIA:/i.test(textForMediaParsing);
+  
+  if (!hasMediaTag) {
+    for (const trigger of fallbackTriggers) {
+        if (trigger.keywords.some(k => lowerText.includes(k))) {
+             // Verificar se a mídia existe
+             const media = await getAdminMediaByName(undefined, trigger.mediaName);
+             if (media) {
+                 console.log(`🔧 [SALES] Fallback: Adicionando mídia ${trigger.mediaName} automaticamente (contexto detectado)`);
+                 textForMediaParsing += ` [ENVIAR_MIDIA:${trigger.mediaName}]`;
+                 break; // Só adiciona uma para não spamar
+             }
+        }
+    }
+  }
+  
+  // Parse tags de mídia
+  const { cleanText, mediaActions } = parseAdminMediaTags(textForMediaParsing);
+  
+  // Processar mídias
+  const processedMediaActions: Array<{
+    type: 'send_media';
+    media_name: string;
+    mediaData?: AdminMedia;
+  }> = [];
+  
+  for (const action of mediaActions) {
+    const mediaData = await getAdminMediaByName(undefined, action.media_name);
+    if (mediaData) {
+      processedMediaActions.push({
+        type: 'send_media',
+        media_name: action.media_name,
+        mediaData,
+      });
+    }
+  }
+  
+  // Executar ações
+  const actionResults = await executeActions(session, actions);
+  
+  // Montar texto final
+  let finalText = cleanText;
+  
+  // SE HOUVER CREDENCIAIS DE TESTE (CRIAR_CONTA_TESTE)
+  // Em vez de colar um bloco robótico, vamos pedir para a IA gerar a entrega do link
+  if (actionResults.testAccountCredentials) {
+    const { loginUrl, simulatorToken } = actionResults.testAccountCredentials;
+    
+    // Montar link do simulador
+    const baseUrl = loginUrl || process.env.APP_URL || 'https://agentezap.online';
+    const simulatorLink = simulatorToken 
+      ? `${baseUrl}/test/${simulatorToken}` 
+      : `${baseUrl}/testar`;
+    
+    console.log(`🎉 [SALES] Link gerado: ${simulatorLink}. Solicitando entrega natural via IA...`);
+
+    // Contexto para a IA entregar o link
+    const deliveryContext = `[SISTEMA: A conta de teste foi criada com sucesso! O link é: ${simulatorLink} . Entregue este link para o cliente agora.
+    
+    OBRIGATÓRIO:
+    1. Você DEVE incluir o link ${simulatorLink} na sua resposta.
+    2. Seja natural, breve e amigável.
+    3. Diga algo como "Pronto, criei seu teste! Clica aqui pra ver: ${simulatorLink}".
+    4. NÃO use blocos de texto prontos. Apenas converse.]`;
+    
+    // Adicionar contexto invisível para guiar a geração (não salvar no histórico do usuário ainda)
+    // Mas precisamos que a IA saiba o que aconteceu.
+    // Vamos gerar uma NOVA resposta que substitui a anterior (que tinha apenas a tag de ação)
+    
+    const deliveryResponse = await generateAIResponse(session, deliveryContext);
+    const deliveryParsed = parseActions(deliveryResponse);
+    
+    // Substituir o texto final pela entrega natural do link
+    finalText = deliveryParsed.cleanText;
+
+    // GARANTIA DE ENTREGA DO LINK: Se a IA esqueceu o link, adicionar manualmente
+    if (!finalText.includes(simulatorLink)) {
+      console.log(`⚠️ [SALES] IA esqueceu o link no texto. Adicionando manualmente.`);
+      finalText += `\n\n${simulatorLink}`;
+    }
+
+    console.log(`🤖 [SALES] Nova resposta gerada com link: "${finalText}"`);
+  }
+  
+  // Adicionar resposta ao histórico
+  addToConversationHistory(cleanPhone, "assistant", finalText);
+  
+  // ═══════════════════════════════════════════════════════════════════════════
+  // SISTEMA DE FOLLOW-UP INTELIGENTE (CONTROLADO PELA IA)
+  // ═══════════════════════════════════════════════════════════════════════════
+  // A IA decide se e quando fazer follow-up usando a tag [FOLLOWUP:...]
+  // Se a IA não pediu follow-up, não agendamos automaticamente
+  
+  if (session.flowState !== 'active') {
+    if (followUp) {
+      // IA solicitou follow-up específico
+      const delayMinutes = parseTimeToMinutes(followUp.tempo);
+      console.log(`⏰ [SALES] Follow-up solicitado pela IA: ${delayMinutes}min - ${followUp.motivo}`);
+      
+      // Forçar ciclo padrão (resetar para 10min) pois a IA acabou de falar
+      await followUpService.scheduleInitialFollowUpByPhone(cleanPhone);
+    } else {
+      // IA não pediu follow-up
+      console.log(`📝 [SALES] IA não solicitou follow-up para ${cleanPhone}`);
+
+      // Forçar ciclo padrão (resetar para 10min) pois a IA acabou de falar
+      console.log(`🔄 [SALES] Iniciando ciclo de follow-up (10min) para ${cleanPhone}`);
+      await followUpService.scheduleInitialFollowUpByPhone(cleanPhone);
+    }
+  }
+  
+  return {
+    text: finalText,
+    mediaActions: processedMediaActions.length > 0 ? processedMediaActions : undefined,
+    actions: actionResults,
+  };
+}
+
+// ============================================================================
+// FUNÇÕES AUXILIARES
+// ============================================================================
+
+async function findUserByPhone(phone: string): Promise<any | undefined> {
+  try {
+    const cleanPhone = phone.replace(/\D/g, "");
+    const users = await storage.getAllUsers();
+    return users.find(u => u.phone?.replace(/\D/g, "") === cleanPhone);
+  } catch {
+    return undefined;
+  }
+}
+
+export async function createClientAccount(session: ClientSession): Promise<{ userId: string; success: boolean; error?: string }> {
+  try {
+    // Se não tem email, gerar um fictício
+    const email = session.email || generateTempEmail(session.phoneNumber);
+    
+    // Verificar se já existe
+    const users = await storage.getAllUsers();
+    const existing = users.find(u => u.email?.toLowerCase() === email.toLowerCase());
+    if (existing) {
+      updateClientSession(session.phoneNumber, { userId: existing.id });
+      return { userId: existing.id, success: true };
+    }
+    
+    // Criar usuário
+    const user = await storage.upsertUser({
+      email: email,
+      name: session.agentConfig?.company || "Cliente",
+      phone: session.phoneNumber,
+      role: "user",
+    });
+    
+    // Criar config do agente
+    if (session.agentConfig?.prompt) {
+      const fullPrompt = `Você é ${session.agentConfig.name || "o atendente"}, ${session.agentConfig.role || "atendente"} da ${session.agentConfig.company || "empresa"}.
+
+${session.agentConfig.prompt}
+
+REGRAS:
+- Seja educado e prestativo
+- Respostas curtas e objetivas
+- Linguagem natural
+- Não invente informações
+- IMPORTANTE: Sempre se apresente com seu nome e empresa se perguntarem quem é, para não parecer robô. Ex: "Sou o ${session.agentConfig.name || "Atendente"} da ${session.agentConfig.company || "Empresa"}".`;
+
+      await storage.upsertAgentConfig(user.id, {
+        prompt: fullPrompt,
+        isActive: true,
+        model: "mistral-small-latest",
+        triggerPhrases: [],
+        messageSplitChars: 400,
+        responseDelaySeconds: 30,
+      });
+    }
+    
+    // Criar trial de 24h
+    const plans = await storage.getActivePlans();
+    const basicPlan = plans[0];
+    
+    if (basicPlan) {
+      const trialEnd = new Date();
+      trialEnd.setHours(trialEnd.getHours() + 24);
+      
+      await storage.createSubscription({
+        userId: user.id,
+        planId: basicPlan.id,
+        status: "trialing",
+        dataInicio: new Date(),
+        dataFim: trialEnd,
+      });
+    }
+    
+    updateClientSession(session.phoneNumber, { userId: user.id, email: email });
+    console.log(`✅ [SALES] Conta criada: ${email} (ID: ${user.id})`);
+    
+    return { userId: user.id, success: true };
+  } catch (error) {
+    console.error("[SALES] Erro ao criar conta:", error);
+    return { userId: "", success: false, error: String(error) };
+  }
+}
+
+export async function getOwnerNotificationNumber(): Promise<string> {
+  const config = await storage.getSystemConfig("owner_notification_number");
+  return config?.valor || "5517991956944";
+}
+
+export async function setOwnerNotificationNumber(number: string): Promise<void> {
+  await storage.updateSystemConfig("owner_notification_number", number);
+}
+
+/**
+ * Gera resposta de follow-up contextualizada
+ */
+export async function generateFollowUpResponse(phoneNumber: string, context: string): Promise<string> {
+  const session = getClientSession(phoneNumber);
+  if (!session) return "";
+  
+  try {
+    const mistral = await getMistralClient();
+    
+    // Buscar nome do contato no banco
+    const conversation = await storage.getAdminConversationByPhone(phoneNumber);
+    const contactName = conversation?.contactName || "";
+    
+    // Aumentar contexto para 30 mensagens para pegar "toda a conversa" relevante
+    const history = session.conversationHistory.slice(-30).map(m => `${m.role}: ${m.content}`).join("\n");
+
+    // Calculate time elapsed
+    const lastMessage = session.conversationHistory[session.conversationHistory.length - 1];
+    let timeContext = "algum tempo";
+    if (lastMessage && lastMessage.timestamp) {
+        const diffMs = Date.now() - new Date(lastMessage.timestamp).getTime();
+        const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
+        const diffDays = Math.floor(diffHours / 24);
+        
+        if (diffDays > 0) timeContext = `${diffDays} dias`;
+        else if (diffHours > 0) timeContext = `${diffHours} horas`;
+        else timeContext = "alguns minutos";
+    }
+
+    // Use agent config if available, otherwise fallback to Rodrigo
+    const agentName = session.agentConfig?.name || "RODRIGO";
+    const agentRole = session.agentConfig?.role || "Vendedor";
+    const agentPrompt = session.agentConfig?.prompt || "Você é um vendedor experiente e amigável.";
+
+    const prompt = `Você é ${agentName}, ${agentRole}.
+Suas instruções de personalidade e comportamento:
+${agentPrompt}
+
+SITUAÇÃO ATUAL:
+O cliente ${contactName ? `se chama "${contactName}"` : "não tem nome identificado"} e parou de responder há ${timeContext}.
+Contexto do follow-up: ${context}
+Estado do cliente: ${session.flowState}
+
+HISTÓRICO DA CONVERSA (Últimas 30 mensagens):
+${history}
+
+SUA TAREFA:
+Gere uma mensagem de follow-up curta para reativar o cliente.
+
+REGRAS CRÍTICAS (SIGA ESTRITAMENTE):
+1. **NOME DO CLIENTE**:
+   - Se o nome "${contactName}" for válido (não vazio), use-o naturalmente (ex: "Oi ${contactName}...", "E aí ${contactName}...").
+   - Se NÃO houver nome, use APENAS saudações genéricas (ex: "Oi!", "Olá!", "Tudo bem?").
+   - **JAMAIS** use placeholders como "[Nome]", "[Cliente]", "[Nome do Cliente]". ISSO É PROIBIDO.
+
+2. **OPÇÃO ÚNICA (ZERO AMBIGUIDADE)**:
+   - Gere APENAS UMA mensagem pronta para enviar.
+   - **NÃO** dê opções (ex: "Opção 1:...", "Ou se preferir...", "Você pode dizer...").
+   - **NÃO** explique o que você está fazendo. Apenas escreva a mensagem.
+   - O texto retornado será enviado DIRETAMENTE para o WhatsApp do cliente.
+
+3. **RECUPERAÇÃO DE VENDA (TÉCNICA DE FOLLOW-UP)**:
+   - LEIA O HISTÓRICO COMPLETO. Identifique onde a conversa parou.
+   - Se foi objeção de preço: Pergunte se o valor ficou claro ou se ele quer ver condições de parcelamento.
+   - Se foi dúvida técnica: Pergunte se ele conseguiu entender a explicação anterior.
+   - Se ele sumiu sem motivo: Tente reativar com uma novidade ou benefício chave ("Lembrei que isso aqui ajuda muito em X...").
+   - **NÃO SEJA CHATO**: Não cobre resposta ("E aí?", "Viu?"). Ofereça valor ("Pensei nisso aqui pra você...").
+
+4. **ESTILO**:
+   - Curto (máximo 2 frases).
+   - Tom de conversa no WhatsApp (pode usar 1 emoji se fizer sentido, mas sem exageros).
+   - Não pareça desesperado. Apenas um "lembrete amigo".
+
+5. **PROIBIDO**:
+   - Não use [AÇÃO:...].
+   - Não use aspas na resposta.
+   - Não repita a última mensagem que você já enviou. Tente uma abordagem diferente.`;
+
+    const configuredModel = await getConfiguredModel();
+    const response = await mistral.chat.complete({
+      model: configuredModel,
+      messages: [{ role: "user", content: prompt }],
+      maxTokens: 150,
+      temperature: 0.6, // Reduzido para 0.6 para ser mais determinístico e evitar "criatividade" de dar opções
+    });
+    
+    let content = response.choices?.[0]?.message?.content?.toString() || "";
+    
+    // Limpeza de segurança final
+    content = content.replace(/\[Nome\]/gi, "").replace(/\[Cliente\]/gi, "").trim();
+    
+    // Remover prefixos comuns de "opções" que a IA as vezes gera
+    content = content.replace(/^(Opção \d:|Sugestão:|Mensagem:)\s*/i, "");
+    
+    // Remover aspas se a IA colocar
+    if (content.startsWith('"') && content.endsWith('"')) {
+      content = content.slice(1, -1);
+    }
+    
+    // Se a IA gerar "Ou..." no meio do texto (indicando duas opções), cortar tudo depois do "Ou"
+    // Ex: "Oi fulano! Tudo bem? Ou se preferir..." -> "Oi fulano! Tudo bem?"
+    const splitOptions = content.split(/\n\s*(?:Ou|ou|Ou se preferir|Opção 2)\b/);
+    if (splitOptions.length > 1) {
+        content = splitOptions[0].trim();
+    }
+    
+    return content;
+  } catch (error) {
+    console.error("Erro ao gerar follow-up:", error);
+    return "Oi! Tudo bem? Só pra saber se ficou alguma dúvida! 😊";
+  }
+}
+
+/**
+ * Gera resposta para contato agendado
+ */
+export async function generateScheduledContactResponse(phoneNumber: string, reason: string): Promise<string> {
+  const session = getClientSession(phoneNumber);
+  
+  try {
+    const mistral = await getMistralClient();
+    
+    // Buscar nome do contato no banco
+    const conversation = await storage.getAdminConversationByPhone(phoneNumber);
+    const contactName = conversation?.contactName || "";
+
+    const prompt = `Você é o RODRIGO (V9 - PRINCÍPIOS PUROS).
+Você agendou de entrar em contato com o cliente hoje.
+Motivo do agendamento: ${reason}
+Estado do cliente: ${session?.flowState || 'desconhecido'}
+Nome do cliente: ${contactName || "Não identificado"}
+
+Gere uma mensagem de retorno NATURAL e AMIGÁVEL.
+
+REGRAS:
+1. Se tiver o nome "${contactName}", use-o (ex: "Fala ${contactName}, tudo bom?").
+2. Se NÃO tiver nome, use apenas "Fala! Tudo bom?".
+3. JAMAIS use [Nome] ou placeholders.
+4. Sem formalidades.
+5. NÃO use ações [AÇÃO:...]. Apenas texto natural.`;
+
+    const configuredModel = await getConfiguredModel();
+    const response = await mistral.chat.complete({
+      model: configuredModel,
+      messages: [{ role: "user", content: prompt }],
+      maxTokens: 150,
+      temperature: 0.7,
+    });
+    
+    let content = response.choices?.[0]?.message?.content?.toString() || "Fala! Fiquei de te chamar hoje, tudo certo por aí?";
+    
+    // Limpeza de segurança
+    content = content.replace(/\[Nome\]/gi, "").replace(/\[Cliente\]/gi, "").trim();
+    if (content.startsWith('"') && content.endsWith('"')) {
+      content = content.slice(1, -1);
+    }
+    
+    return content;
+  } catch {
+    return "Fala! Fiquei de te chamar hoje, tudo certo por aí? 👍";
+  }
+}

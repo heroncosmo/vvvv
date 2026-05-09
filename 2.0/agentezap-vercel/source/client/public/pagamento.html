@@ -1,0 +1,154 @@
+﻿<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Pagamento PIX - AgenteZap</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.4/build/qrcode.min.js"></script>
+  <style>
+    :root {
+      --brand: #059669;
+      --brand-dark: #047857;
+      --ink: #0f172a;
+      --muted: #475569;
+      --line: #e2e8f0;
+      --bg: #f8fafc;
+    }
+    body {
+      font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+      background: radial-gradient(circle at top, #ecfdf5 0%, var(--bg) 46%);
+      color: var(--ink);
+    }
+  </style>
+</head>
+<body class="min-h-screen py-8 px-4">
+  <main class="max-w-md mx-auto bg-white rounded-2xl border border-slate-200 shadow-xl overflow-hidden">
+    <section class="bg-emerald-600 px-6 py-5 text-white text-center">
+      <h1 class="text-xl font-bold">Finalizar Assinatura</h1>
+      <p class="text-emerald-100 text-sm mt-1">Plano Pro - R$ 99,99 / mes</p>
+    </section>
+
+    <section class="p-6 space-y-6">
+      <div class="text-center space-y-3">
+        <h2 class="font-semibold text-lg">Pagamento via PIX</h2>
+        <p class="text-sm text-slate-500">Escaneie o QR Code ou use o copia e cola.</p>
+        <div class="mx-auto w-56 h-56 bg-white border border-slate-200 rounded-xl p-2 flex items-center justify-center">
+          <canvas id="pixQrCanvas" width="208" height="208" aria-label="QR Code PIX"></canvas>
+        </div>
+      </div>
+
+      <div class="space-y-2">
+        <label class="text-xs font-semibold uppercase tracking-wide text-slate-500">PIX Copia e Cola</label>
+        <textarea id="pixCode" readonly class="w-full h-28 rounded-lg border border-slate-200 bg-slate-50 p-3 text-[11px] leading-relaxed text-slate-700 font-mono resize-none"></textarea>
+        <button id="copyPixButton" type="button" class="w-full rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-semibold py-2.5 transition-colors">Copiar Codigo PIX</button>
+        <p id="copyStatus" class="text-xs text-emerald-700 text-center hidden">Codigo copiado.</p>
+      </div>
+
+      <div class="rounded-lg border border-emerald-200 bg-emerald-50 p-4 text-sm text-slate-700 space-y-1">
+        <p><strong>Chave PIX:</strong> 17981465183</p>
+        <p><strong>Titular:</strong> Maria Fernandes</p>
+        <p><strong>Banco:</strong> Nubank</p>
+      </div>
+
+      <div class="rounded-xl border border-slate-200 p-4 space-y-3">
+        <h3 class="font-semibold text-slate-900">Eu ja paguei</h3>
+        <p class="text-xs text-slate-500">Envie o comprovante aqui para aparecer direto no admin.</p>
+
+        <label class="block text-xs font-medium text-slate-600" for="payerPhone">Seu WhatsApp (com DDD)</label>
+        <input id="payerPhone" type="tel" inputmode="numeric" placeholder="Ex: 17999998888" class="w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500" />
+
+        <label class="block text-xs font-medium text-slate-600" for="receiptFile">Comprovante (imagem ou PDF)</label>
+        <input id="receiptFile" type="file" accept="image/*,.pdf" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white" />
+
+        <button id="sendReceiptButton" type="button" class="w-full rounded-lg bg-slate-900 hover:bg-slate-800 text-white font-semibold py-2.5 transition-colors">Enviar Comprovante</button>
+        <p id="receiptStatus" class="text-xs text-slate-600"></p>
+      </div>
+
+      <a href="https://wa.me/5517981679818?text=Ja%20fiz%20o%20pagamento%20do%20AgenteZap%20e%20preciso%20de%20suporte." target="_blank" rel="noopener noreferrer" class="block text-center text-sm text-emerald-700 font-semibold hover:text-emerald-800">Precisa de ajuda? Falar no WhatsApp</a>
+    </section>
+  </main>
+
+  <script>
+    const PIX_CODE = "00020101021126360014br.gov.bcb.pix0114+5517981465183520400005303986540599.995802BR5914RODRIGO MACEDO6009COSMORAMA622905257C07EAC7D06B485DACDC9D83A6304D87D";
+
+    const pixCodeField = document.getElementById("pixCode");
+    const copyButton = document.getElementById("copyPixButton");
+    const copyStatus = document.getElementById("copyStatus");
+    const payerPhone = document.getElementById("payerPhone");
+    const receiptFile = document.getElementById("receiptFile");
+    const sendReceiptButton = document.getElementById("sendReceiptButton");
+    const receiptStatus = document.getElementById("receiptStatus");
+
+    pixCodeField.value = PIX_CODE;
+
+    QRCode.toCanvas(document.getElementById("pixQrCanvas"), PIX_CODE, {
+      width: 208,
+      margin: 1,
+      color: {
+        dark: "#0f172a",
+        light: "#ffffff"
+      }
+    });
+
+    copyButton.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(PIX_CODE);
+        copyStatus.classList.remove("hidden");
+        setTimeout(() => copyStatus.classList.add("hidden"), 2200);
+      } catch {
+        copyStatus.textContent = "Nao consegui copiar automaticamente. Segure e copie manualmente.";
+        copyStatus.classList.remove("hidden");
+      }
+    });
+
+    sendReceiptButton.addEventListener("click", async () => {
+      const phone = (payerPhone.value || "").replace(/\D/g, "");
+      const file = receiptFile.files && receiptFile.files[0] ? receiptFile.files[0] : null;
+
+      if (phone.length < 10) {
+        receiptStatus.textContent = "Informe o WhatsApp com DDD para localizar sua conta.";
+        receiptStatus.className = "text-xs text-red-600";
+        return;
+      }
+
+      if (!file) {
+        receiptStatus.textContent = "Selecione o comprovante antes de enviar.";
+        receiptStatus.className = "text-xs text-red-600";
+        return;
+      }
+
+      sendReceiptButton.disabled = true;
+      sendReceiptButton.textContent = "Enviando...";
+      receiptStatus.textContent = "";
+
+      try {
+        const formData = new FormData();
+        formData.append("phone", phone);
+        formData.append("receipt", file);
+        formData.append("amount", "99.99");
+
+        const response = await fetch("/api/public/payment-receipts/upload", {
+          method: "POST",
+          body: formData
+        });
+
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(data.message || "Falha ao enviar comprovante.");
+        }
+
+        receiptStatus.textContent = "Comprovante enviado com sucesso. Ja apareceu no admin para aprovacao.";
+        receiptStatus.className = "text-xs text-emerald-700";
+        receiptFile.value = "";
+      } catch (error) {
+        receiptStatus.textContent = error && error.message ? error.message : "Nao foi possivel enviar agora.";
+        receiptStatus.className = "text-xs text-red-600";
+      } finally {
+        sendReceiptButton.disabled = false;
+        sendReceiptButton.textContent = "Enviar Comprovante";
+      }
+    });
+  </script>
+</body>
+</html>
