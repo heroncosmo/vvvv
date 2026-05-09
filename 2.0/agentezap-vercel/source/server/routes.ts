@@ -35437,10 +35437,13 @@ if (false && (i + 1) % batchSize === 0 && i + 1 < pendingNotifications.length) {
             }))
             .filter((target: any) => target.groupId)
         : [];
+      const resolvedGroupTargets = normalizedGroupTargets.length > 0
+        ? normalizedGroupTargets
+        : normalizedGroupIds.map((groupId: string) => ({ groupId, connectionId: "" }));
       const targetConnectionIds = Array.from(
         new Set(
           [
-            ...normalizedGroupTargets.map((target: any) => target.connectionId).filter(Boolean),
+            ...resolvedGroupTargets.map((target: any) => target.connectionId).filter(Boolean),
             String(connectionId || "").trim(),
           ].filter(Boolean),
         ),
@@ -35466,13 +35469,11 @@ if (false && (i + 1) % batchSize === 0 && i + 1 < pendingNotifications.length) {
       }
 
       const fallbackRuntimeConnection = groupsRuntimeConnections[0];
-      const targetByGroupId = new Map(
-        normalizedGroupTargets.map((target: any) => [target.groupId, target.connectionId || ""]),
-      );
       const groupIdsByConnection = new Map<string, string[]>();
 
-      for (const groupId of normalizedGroupIds) {
-        const targetConnectionId = targetByGroupId.get(groupId);
+      for (const target of resolvedGroupTargets) {
+        const groupId = target.groupId;
+        const targetConnectionId = target.connectionId;
         const runtimeConnection =
           (targetConnectionId ? runtimeByConnectionId.get(targetConnectionId) : null) ||
           fallbackRuntimeConnection;
@@ -35558,7 +35559,7 @@ if (false && (i + 1) % batchSize === 0 && i + 1 < pendingNotifications.length) {
 
         message,
 
-        recipients: normalizedGroupIds,
+        recipients: resolvedGroupTargets.map((target: any) => target.groupId),
 
         recipientNames: groupsMetadata,
 
@@ -35598,7 +35599,7 @@ if (false && (i + 1) % batchSize === 0 && i + 1 < pendingNotifications.length) {
 
           campaignId,
 
-          total: normalizedGroupIds.length,
+          total: resolvedGroupTargets.length,
 
           message: `Envio agendado para ${new Date(scheduledAt).toLocaleString('pt-BR')}`
 
@@ -35616,7 +35617,7 @@ if (false && (i + 1) % batchSize === 0 && i + 1 < pendingNotifications.length) {
 
         success: true,
 
-        total: normalizedGroupIds.length,
+        total: resolvedGroupTargets.length,
 
         sent: 0,
 
@@ -35626,7 +35627,7 @@ if (false && (i + 1) % batchSize === 0 && i + 1 < pendingNotifications.length) {
 
         progress: {
 
-          total: normalizedGroupIds.length,
+          total: resolvedGroupTargets.length,
 
           sent: 0,
 
