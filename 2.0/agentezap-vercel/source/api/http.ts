@@ -9324,6 +9324,10 @@ function extractWebOnlyCatalogProductTokens(productName: unknown): string[] {
   const stopWords = new Set([
     "catalogo",
     "catalog",
+    "produto",
+    "produtos",
+    "climatizador",
+    "climatizadores",
     "fotos",
     "foto",
     "painel",
@@ -9346,7 +9350,10 @@ function extractWebOnlyCatalogProductTokens(productName: unknown): string[] {
   return normalizeWebOnlyCatalogText(productName)
     .split(" ")
     .map((token) => token.trim())
-    .filter((token) => token.length >= 3 && !stopWords.has(token));
+    .filter((token) => {
+      const canonicalToken = canonicalizeWebOnlyCatalogToken(token);
+      return (token.length >= 3 || /^\d{2,4}$/.test(token)) && !stopWords.has(token) && !stopWords.has(canonicalToken);
+    });
 }
 
 function getWebOnlyCatalogMessageTokens(value: unknown): string[] {
@@ -9384,7 +9391,16 @@ function getWebOnlyCatalogTokenDistance(left: string, right: string): number {
   return previous[b.length];
 }
 
-function webOnlyCatalogProductTokenMatches(productToken: string, messageTokens: string[], normalizedMessage: string): boolean {
+function canonicalizeWebOnlyCatalogToken(value: unknown): string {
+  const token = normalizeWebOnlyCatalogText(value);
+  if (!token) return "";
+  if (token === "portateis" || token === "portatil") return "portatil";
+  if (token === "standart" || token === "standard" || token === "stadart") return "standard";
+  if (token === "climatizadores" || token === "climatizador") return "climatizador";
+  return token;
+}
+
+function rawWebOnlyCatalogProductTokenMatches(productToken: string, messageTokens: string[], normalizedMessage: string): boolean {
   if (!productToken) return false;
   if (normalizedMessage.includes(productToken)) return true;
   const compactMessage = normalizedMessage.replace(/\s+/g, "");
@@ -9408,6 +9424,31 @@ function webOnlyCatalogProductTokenMatches(productToken: string, messageTokens: 
     }
     return false;
   });
+}
+
+function webOnlyCatalogProductTokenMatches(productToken: string, messageTokens: string[], normalizedMessage: string): boolean {
+  if (rawWebOnlyCatalogProductTokenMatches(productToken, messageTokens, normalizedMessage)) {
+    return true;
+  }
+
+  const canonicalProductToken = canonicalizeWebOnlyCatalogToken(productToken);
+  const canonicalMessageTokens = Array.from(new Set(messageTokens.map(canonicalizeWebOnlyCatalogToken).filter(Boolean)));
+  const canonicalNormalizedMessage = canonicalMessageTokens.join(" ");
+  if (
+    canonicalProductToken &&
+    (
+      canonicalProductToken !== productToken ||
+      canonicalNormalizedMessage !== normalizedMessage
+    )
+  ) {
+    return rawWebOnlyCatalogProductTokenMatches(
+      canonicalProductToken,
+      canonicalMessageTokens,
+      canonicalNormalizedMessage,
+    );
+  }
+
+  return false;
 }
 
 function getWebOnlyCatalogProductRequestOrder(
@@ -9507,6 +9548,19 @@ function formatWebOnlyHumanList(items: string[]): string {
   return `${clean.slice(0, -1).join(", ")} e ${clean[clean.length - 1]}`;
 }
 
+function looksLikeWebOnlyCatalogProductionDetails(actions: any[]): boolean {
+  return (actions || []).some((action) => {
+    const haystack = normalizeWebOnlyCatalogText([
+      action?.media_name,
+      action?.caption,
+      action?.text,
+      action?.product_name,
+      action?.variation_name,
+    ].filter(Boolean).join(" "));
+    return /\b(painel|paineis|cilindro|cilindros|capa|capas|estamparia|sublimacao|costurado|costura|sem costura|acabamento)\b/i.test(haystack);
+  });
+}
+
 function buildWebOnlyCatalogMediaTurnText(params: { catalogMediaActions: any[] }) {
   const labels = getWebOnlyCatalogThemeLabelsFromActions(params.catalogMediaActions);
   const themeText = labels.length > 0
@@ -9514,9 +9568,12 @@ function buildWebOnlyCatalogMediaTurnText(params: { catalogMediaActions: any[] }
       ? `do tema ${labels[0]}`
       : `dos temas ${formatWebOnlyHumanList(labels)}`
     : "do catálogo";
+  const nextStepText = looksLikeWebOnlyCatalogProductionDetails(params.catalogMediaActions)
+    ? "Depois de ver as imagens, me diga o código escolhido. Para eu seguir com o pedido, envie também acabamento, tamanho e quantidade."
+    : "Depois de ver as imagens, me diga o código ou modelo escolhido. Para eu seguir, envie também a quantidade desejada.";
   return [
     `${getWebOnlyBrazilGreeting()}! Encontrei as fotos ${themeText} e vou enviar para você.`,
-    "Depois de ver as imagens, me diga o código escolhido. Para eu seguir com o pedido, envie também acabamento, tamanho e quantidade.",
+    nextStepText,
   ].join("\n\n");
 }
 
@@ -10034,6 +10091,19 @@ function looksLikeWebOnlyCatalogSelectionByCode(text: string): boolean {
   const normalized = normalizeWebOnlyCatalogText(text);
   if (!normalized) return false;
   return /\b(quero|queria|vou querer|escolhi|escolhe|inclui|inclua|separe|separa|esse|essa|esses|essas|codigo|cod|item|itens|recebido|imagem analisada|image recebido|foto recebida)\b/i.test(normalized);
+}
+
+function isWebOnlyAggregateCatalogProduct(value: unknown): boolean {
+  const normalized = normalizeWebOnlyCatalogText(value);
+  return /\bcatalogo\b/i.test(normalized);
+}
+
+function shouldPreferWebOnlyAggregateCatalogProducts(message: string): boolean {
+  const normalized = normalizeWebOnlyCatalogText(message);
+  if (!normalized) return false;
+  if (extractWebOnlyRequestedCatalogCodes(message).size > 0) return false;
+  if (/\b(?:roto|modelo)\s+\d{2,4}\b/i.test(normalized)) return false;
+  return /\b(catalogo|linha|linhas|opcao|opcoes|modelo|modelos|portatil|portateis|confort|standard|standart|stadart)\b/i.test(normalized);
 }
 
 async function buildWebOnlyExactCatalogSelectionResponseFromCodes(params: {
@@ -11373,12 +11443,24 @@ async function buildWebOnlyCatalogMediaActions(params: {
     }
   }
 
-  const selectedRows = rows.filter((row) => {
+  let selectedRows = rows.filter((row) => {
     const code = Number(row.variation_code);
     if (requestedCodes.size > 0 && requestedCodes.has(code)) return true;
     if (matchingProductIds.has(String(row.product_id))) return true;
     return requestedCodes.size === 0 && matchingProductIds.size === 0 && /\bcatalogo\b/i.test(normalizedRequest);
   });
+
+  if (requestedCodes.size === 0 && shouldPreferWebOnlyAggregateCatalogProducts(params.message)) {
+    const aggregateProductIds = new Set(
+      selectedRows
+        .filter((row) => isWebOnlyAggregateCatalogProduct(row.product_name))
+        .map((row) => String(row.product_id || "")),
+    );
+    if (aggregateProductIds.size > 0 && aggregateProductIds.size < new Set(selectedRows.map((row) => String(row.product_id || ""))).size) {
+      selectedRows = selectedRows.filter((row) => aggregateProductIds.has(String(row.product_id || "")));
+    }
+  }
+
   const requestedCodeOrder = new Map(Array.from(requestedCodes).map((code, index) => [code, index]));
   selectedRows.sort((left, right) => {
     const leftCode = Number(left.variation_code);
