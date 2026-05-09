@@ -9084,7 +9084,7 @@ function mergeWebOnlyNotifications(
 }
 
 function normalizeWebOnlyCatalogText(value: unknown): string {
-  return String(value || "")
+  return repairWebOnlyMojibakeText(String(value || ""))
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase()
@@ -11439,7 +11439,7 @@ async function buildWebOnlyCatalogMediaActions(params: {
   for (const row of rows) {
     const tokens = Array.from(new Set([
       ...extractWebOnlyCatalogProductTokens(row.product_name),
-      ...getWebOnlyCatalogMessageTokens(getWebOnlyCatalogThemeLabel(row.product_name)),
+      ...extractWebOnlyCatalogProductTokens(getWebOnlyCatalogThemeLabel(row.product_name)),
       ...extractWebOnlyCatalogProductTokens(row.product_category),
     ]));
     if (tokens.some((token) => webOnlyCatalogProductTokenMatches(token, requestTokens, normalizedRequest))) {
