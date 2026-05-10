@@ -2365,6 +2365,10 @@ Responda de forma concisa. Para catalogo/pedido com varios itens, use uma lista 
           owner_last_reply_at IS NOT NULL
           AND auto_reactivate_after_minutes IS NOT NULL
           AND owner_last_reply_at + (auto_reactivate_after_minutes * INTERVAL '1 minute') <= NOW()
+        ORDER BY
+          CASE WHEN client_has_pending_message = true THEN 0 ELSE 1 END ASC,
+          client_last_message_at DESC NULLS LAST,
+          owner_last_reply_at + (auto_reactivate_after_minutes * INTERVAL '1 minute') DESC
         LIMIT 10
       `);
       

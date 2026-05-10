@@ -37158,6 +37158,7 @@ async function runMetaFormularioSyncForAllConfiguredUsers(req: any, options?: { 
 }
 
 async function runWebOnlyAutoReactivateJob(limit = 10) {
+  const pendingReplyFreshnessMs = 6 * 60 * 60 * 1000;
   const dueResult = await getPool().query(
     `
       SELECT
@@ -37178,7 +37179,10 @@ async function runWebOnlyAutoReactivateJob(limit = 10) {
         AND COALESCE(c.is_closed, false) = false
         AND COALESCE(wc.ai_enabled, true) = true
         AND (c.remote_jid IS NULL OR c.remote_jid NOT ILIKE '%@g.us')
-      ORDER BY adc.owner_last_reply_at + (adc.auto_reactivate_after_minutes * INTERVAL '1 minute') DESC
+      ORDER BY
+        CASE WHEN adc.client_has_pending_message = true THEN 0 ELSE 1 END ASC,
+        adc.client_last_message_at DESC NULLS LAST,
+        adc.owner_last_reply_at + (adc.auto_reactivate_after_minutes * INTERVAL '1 minute') DESC
       LIMIT $1
     `,
     [Math.max(1, Math.min(Number(limit) || 10, 50))],
@@ -37194,11 +37198,10 @@ async function runWebOnlyAutoReactivateJob(limit = 10) {
     const conversationId = String(row.conversationId || "");
     const userId = String(row.userId || "");
     const hadPendingMessage = row.clientHasPendingMessage === true;
-    const reactivateAt = row.reactivateAt ? new Date(row.reactivateAt).getTime() : 0;
+    const pendingMessageAt = row.clientLastMessageAt ? new Date(row.clientLastMessageAt).getTime() : 0;
     const stalePendingReply =
       hadPendingMessage &&
-      reactivateAt > 0 &&
-      Date.now() - reactivateAt > 6 * 60 * 60 * 1000;
+      (!pendingMessageAt || Date.now() - pendingMessageAt > pendingReplyFreshnessMs);
 
     try {
       const deleteResult = await getPool().query(
@@ -37338,7 +37341,7 @@ async function handleStatefulJobCronWebOnly(req: any, res: any, groupId: string)
 
   const startedAt = Date.now();
   const jobsByGroup: Record<string, string[]> = {
-    "fast-core": ["status-scheduler"],
+    "fast-core": ["status-scheduler", "auto-reactivate"],
     "user-followup": ["user-followup"],
     "auto-reactivate": ["auto-reactivate"],
     "meta-lead-google-sheets": ["meta-lead-google-sheets"],

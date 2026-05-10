@@ -25,6 +25,7 @@ import { triggerAgentResponseForConversation, broadcastToUser } from "./whatsapp
 const CHECK_INTERVAL_FAST_MS = 30 * 1000;   // 30s quando há timers ativos
 const CHECK_INTERVAL_SLOW_MS = 5 * 60 * 1000; // 5min quando não há timers ativos
 const CHECK_INTERVAL_IDLE_MS = 10 * 60 * 1000; // 10min modo idle (nenhum timer configurado)
+const PENDING_MESSAGE_REPLY_FRESHNESS_MS = 6 * 60 * 60 * 1000;
 
 let checkInterval: NodeJS.Timeout | null = null;
 let isRunning = false;
@@ -224,6 +225,16 @@ async function checkAndReactivateConversations() {
         // 5. Disparar resposta da IA APENAS se houver mensagem pendente do cliente
         // Se não há mensagem pendente, a IA só precisa estar ativa para responder a próxima mensagem
         if ((conv as any).clientHasPendingMessage) {
+          const clientLastMessageAt = (conv as any).clientLastMessageAt
+            ? new Date((conv as any).clientLastMessageAt).getTime()
+            : 0;
+          const pendingMessageIsFresh =
+            clientLastMessageAt > 0 &&
+            Date.now() - clientLastMessageAt <= PENDING_MESSAGE_REPLY_FRESHNESS_MS;
+          if (!pendingMessageIsFresh) {
+            console.log(`OK [AUTO-REACTIVATE] IA reativada para ${conv.conversationId}; mensagem pendente antiga, sem resposta retroativa`);
+            continue;
+          }
           try {
             const triggerResult = await triggerAgentResponseForConversation(connection.userId, conv.conversationId);
             console.log(`✅ [AUTO-REACTIVATE] IA reativada e respondendo para ${conv.conversationId}: ${triggerResult.reason}`);
