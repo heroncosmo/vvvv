@@ -7444,6 +7444,16 @@ function hasWebOnlyConfigTextOverlap(configText: unknown, messageText: unknown):
   return false;
 }
 
+function hasWebOnlySpecificNegativeConfigTextOverlap(configText: unknown, messageText: unknown): boolean {
+  const configTerms = extractWebOnlyContextualMediaTerms(configText);
+  const messageTerms = extractWebOnlyContextualMediaTerms(messageText);
+  for (const term of messageTerms) {
+    if (WEB_ONLY_CONTEXTUAL_NEGATIVE_GENERIC_TERMS.has(term)) continue;
+    if (configTerms.has(term)) return true;
+  }
+  return false;
+}
+
 function fallbackArbitrateWebOnlyMediaActionsByConfig(params: {
   message: string;
   mediaActions: any[];
@@ -7463,7 +7473,7 @@ function fallbackArbitrateWebOnlyMediaActionsByConfig(params: {
 
     const media = resolveWebOnlyMediaLibraryItemForAction(action, params.mediaLibrary);
     const guidance = splitWebOnlyOperationalMediaGuidance(media?.whenToUse || media?.description || action?.caption || action?.text);
-    const negativeMatches = guidance.negative && hasWebOnlyConfigTextOverlap(guidance.negative, params.message);
+    const negativeMatches = guidance.negative && hasWebOnlySpecificNegativeConfigTextOverlap(guidance.negative, params.message);
     if (negativeMatches) {
       dropped.push({ index, reason: "config_negative_match" });
       return;
@@ -7986,7 +7996,7 @@ function removeWebOnlyMediaActionsBlockedByConfig(params: {
     const guidance = splitWebOnlyOperationalMediaGuidance(
       media?.whenToUse || media?.description || action?.caption || action?.text,
     );
-    const negativeMatches = guidance.negative && hasWebOnlyConfigTextOverlap(guidance.negative, params.message);
+    const negativeMatches = guidance.negative && hasWebOnlySpecificNegativeConfigTextOverlap(guidance.negative, params.message);
     if (negativeMatches) {
       dropped.push({ index: zeroIndex + 1, reason: "config_negative_match" });
       return;
