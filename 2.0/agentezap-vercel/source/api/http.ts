@@ -11238,6 +11238,67 @@ function applyWebOnlyPromptRequiredFinalLines(text: string, prompt: unknown): { 
   return { text: output, applied };
 }
 
+const WEB_ONLY_EXACT_RESPONSE_STOPWORDS = new Set([
+  "mensagem",
+  "atual",
+  "mostrar",
+  "vontade",
+  "perguntarem",
+  "perguntar",
+  "pergunta",
+  "responda",
+  "exatamente",
+  "acrescente",
+  "nada",
+  "cliente",
+  "sobre",
+]);
+
+function extractWebOnlyPromptExactResponseRules(prompt: unknown): Array<{ tokens: string[]; response: string }> {
+  const text = String(prompt || "");
+  const rules: Array<{ tokens: string[]; response: string }> = [];
+  const pattern = /Se\s+([^\n:]+?),\s*responda exatamente[^\n]*:\s*\n([^\n]+)/gi;
+  for (const match of text.matchAll(pattern)) {
+    const condition = normalizeWebOnlyPromptRuleText(match[1]);
+    const tokens = condition
+      .split(/[^a-z0-9]+/i)
+      .map((token) => token.trim())
+      .filter((token) => token.length >= 4 && !WEB_ONLY_EXACT_RESPONSE_STOPWORDS.has(token));
+    const response = repairWebOnlyOutgoingText(match[2]).trim();
+    if (tokens.length > 0 && response) {
+      rules.push({ tokens: Array.from(new Set(tokens)), response });
+    }
+  }
+  return rules;
+}
+
+function resolveWebOnlyPromptExactResponse(prompt: unknown, message: unknown): string | null {
+  const normalizedMessage = normalizeWebOnlyPromptRuleText(message);
+  if (!normalizedMessage) return null;
+
+  const messageTokens = new Set(
+    normalizedMessage
+      .split(/[^a-z0-9]+/i)
+      .map((token) => token.trim())
+      .filter((token) => token.length >= 3),
+  );
+  const hasInstallIntent = ["instalar", "agendar", "marcar", "horario", "receber", "tecnico", "fechar"]
+    .some((token) => messageTokens.has(token));
+  const hasPriceIntent = ["valor", "preco", "custa", "custo"].some((token) => messageTokens.has(token));
+
+  for (const rule of extractWebOnlyPromptExactResponseRules(prompt)) {
+    const ruleHasPriceIntent = rule.tokens.some((token) => ["valor", "preco", "custa", "custo"].includes(token));
+    if (ruleHasPriceIntent && hasPriceIntent && hasInstallIntent) {
+      continue;
+    }
+    if (rule.tokens.some((token) => messageTokens.has(token))) {
+      return rule.response;
+    }
+  }
+
+  return null;
+}
+
 function extractWebOnlyUrlsFromText(value: unknown): string[] {
   const text = String(value || "");
   const urls: string[] = [];
@@ -12997,10 +13058,32 @@ async function runWebOnlyAgentTestForUser(userId: string, body: any) {
     return "";
   });
 
+  const activePrompt = body.customPrompt ? String(body.customPrompt) : String(config.prompt);
+  const exactPromptResponse = resolveWebOnlyPromptExactResponse(activePrompt, message);
+  if (exactPromptResponse) {
+    const splitResponses = applyWebOnlyTextSettings(exactPromptResponse, config);
+    return {
+      status: 200,
+      payload: {
+        response: splitResponses.join("\n\n"),
+        splitResponses,
+        mediaActions: [],
+        audioResponseMode: "text",
+        wouldSendAudio: false,
+        wouldSendText: splitResponses.length > 0,
+        mode: "prompt_exact_response",
+        agenticRuntime: {
+          enabled: false,
+          skipped: "prompt_exact_response",
+        },
+      },
+    };
+  }
+
   const rawResponseText = await callWebOnlyLlm({
     userId,
     model: String(config?.model || "mistral-small-latest"),
-    prompt: body.customPrompt ? String(body.customPrompt) : String(config.prompt),
+    prompt: activePrompt,
     systemExtra: [
       WEB_ONLY_LINK_BUBBLE_PROMPT,
       WEB_ONLY_WHATSAPP_FORMAT_PROMPT,
@@ -13027,7 +13110,6 @@ async function runWebOnlyAgentTestForUser(userId: string, body: any) {
     ].join("\n"),
   });
   const structuredResponse = parseWebOnlyStructuredAgentResponse(rawResponseText);
-  const activePrompt = body.customPrompt ? String(body.customPrompt) : String(config.prompt);
   const preNotificationCleanText = sanitizeWebOnlyPrematureClosingText({
     text: structuredResponse.cleanText,
     message,
