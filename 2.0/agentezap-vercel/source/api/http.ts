@@ -7038,13 +7038,56 @@ const WEB_ONLY_CONTEXTUAL_MEDIA_STOPWORDS = new Set([
   "atendimento",
 ]);
 
+const WEB_ONLY_CONTEXTUAL_NEGATIVE_GENERIC_TERMS = new Set([
+  "tenda",
+  "tendas",
+  "foto",
+  "fotos",
+  "imagem",
+  "imagens",
+  "video",
+  "videos",
+  "midia",
+  "midias",
+  "pedido",
+  "pedir",
+  "isolado",
+  "simples",
+  "generica",
+  "generico",
+  "preco",
+  "valor",
+  "valores",
+  "disponibilidade",
+  "produto",
+  "produtos",
+]);
+
+function isWebOnlyContextualMediaTerm(term: string): boolean {
+  if (!term || WEB_ONLY_CONTEXTUAL_MEDIA_STOPWORDS.has(term)) return false;
+  if (/^\d{1,2}x\d{1,2}$/.test(term)) return true;
+  return term.length >= 4;
+}
+
+function extractWebOnlyMediaSizeTokens(value: unknown): Set<string> {
+  const tokens = new Set<string>();
+  const normalized = normalizeWebOnlyOperationalMediaText(value);
+  const sizeRegex = /\b(\d{1,2})\s*x\s*(\d{1,2})\b/g;
+  let match: RegExpExecArray | null;
+  while ((match = sizeRegex.exec(normalized)) !== null) {
+    tokens.add(`${match[1]}x${match[2]}`);
+  }
+  return tokens;
+}
+
 function extractWebOnlyContextualMediaTerms(value: unknown): Set<string> {
   const terms = new Set<string>();
   normalizeWebOnlyOperationalMediaText(value)
     .split(" ")
     .map((term) => term.trim())
-    .filter((term) => term.length >= 4 && !WEB_ONLY_CONTEXTUAL_MEDIA_STOPWORDS.has(term))
+    .filter(isWebOnlyContextualMediaTerm)
     .forEach((term) => terms.add(term));
+  extractWebOnlyMediaSizeTokens(value).forEach((term) => terms.add(term));
   return terms;
 }
 
@@ -7061,10 +7104,17 @@ function scoreWebOnlyContextualMediaMatch(params: {
     params.media?.caption,
   ].filter(Boolean).join(" "));
   const negativeTerms = extractWebOnlyContextualMediaTerms(guidance.negative);
+  const messageSizeTokens = extractWebOnlyMediaSizeTokens(params.messageText);
+  const mediaSizeTokens = extractWebOnlyMediaSizeTokens([
+    params.media?.name,
+    params.media?.description,
+    guidance.positive,
+    params.media?.caption,
+  ].filter(Boolean).join(" "));
   let score = 0;
 
   for (const term of params.messageTerms) {
-    if (negativeTerms.has(term)) {
+    if (negativeTerms.has(term) && !WEB_ONLY_CONTEXTUAL_NEGATIVE_GENERIC_TERMS.has(term)) {
       score -= 4;
     }
     if (positiveTerms.has(term)) {
@@ -7075,6 +7125,17 @@ function scoreWebOnlyContextualMediaMatch(params: {
   const normalizedNameTerms = extractWebOnlyContextualMediaTerms(params.media?.name);
   for (const term of normalizedNameTerms) {
     if (params.messageTerms.has(term)) score += 3;
+  }
+
+  for (const sizeToken of messageSizeTokens) {
+    if (mediaSizeTokens.has(sizeToken)) {
+      score += 8;
+    }
+  }
+  for (const mediaSizeToken of mediaSizeTokens) {
+    if (messageSizeTokens.size > 0 && !messageSizeTokens.has(mediaSizeToken)) {
+      score -= 6;
+    }
   }
 
   const phraseText = normalizeWebOnlyOperationalMediaText(params.media?.whenToUse || params.media?.description || "");
