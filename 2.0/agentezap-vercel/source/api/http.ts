@@ -11150,6 +11150,24 @@ Responda de forma curta, sem inventar dados ausentes.`;
   return rawText || "(imagem enviada pelo cliente)";
 }
 
+function getWebOnlyMediaActionDedupeKey(action: any, mediaName: string): string {
+  const actionType = String(action?.type || action?.media_type || action?.mediaType || "").toLowerCase();
+  const mediaUrl = normalizeWebOnlyOpeningMediaUrl(action?.media_url || action?.mediaUrl || "");
+  const mediaType = String(action?.media_type || action?.mediaType || "").toLowerCase().trim();
+  const fileName = String(action?.file_name || action?.fileName || "").trim();
+  const baseName = mediaName || "anonymous";
+
+  if (mediaUrl) {
+    return `media:${baseName}:${mediaType || actionType}:${mediaUrl}`;
+  }
+
+  if (fileName) {
+    return `media:${baseName}:${mediaType || actionType}:file:${fileName}`;
+  }
+
+  return `media:${baseName}`;
+}
+
 function mergeWebOnlyMediaActions(primary: any[], secondary: any[]): any[] {
   const merged: any[] = [];
   const seen = new Set<string>();
@@ -11164,7 +11182,7 @@ function mergeWebOnlyMediaActions(primary: any[], secondary: any[]): any[] {
       Boolean(action?.media_url || action?.mediaUrl)
     );
     const key = mediaName && isMediaAction
-      ? `media:${mediaName}`
+      ? getWebOnlyMediaActionDedupeKey(action, mediaName)
       : String(action?.media_url || action?.mediaUrl || action?.text || JSON.stringify(action));
     if (!key || seen.has(key)) continue;
     seen.add(key);
