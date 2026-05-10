@@ -9324,7 +9324,13 @@ function looksLikeWebOnlyCatalogMediaRequest(text: string): boolean {
 function extractWebOnlyCatalogProductTokens(productName: unknown): string[] {
   const stopWords = new Set([
     "catalogo",
+    "catalogos",
+    "catalago",
+    "catalagos",
+    "cataalago",
+    "cataalogos",
     "catalog",
+    "catalogs",
     "produto",
     "produtos",
     "climatizador",
