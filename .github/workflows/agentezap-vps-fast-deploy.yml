@@ -4,92 +4,31 @@ on:
   workflow_dispatch:
     inputs:
       service:
-        description: Service to build/deploy
+        description: Service to deploy
         required: true
-        default: api
+        default: app
         type: choice
         options:
-          - web
-          - api
-          - worker
           - app
-          - gateway
-          - all
       image_tag:
-        description: Image tag. Leave empty to use the commit SHA.
-        required: false
+        description: Artifact name without .tgz
+        required: true
         type: string
 
-env:
-  REGISTRY: ghcr.io
-  IMAGE_OWNER: ${{ github.repository_owner }}
-
 jobs:
-  build-and-deploy:
+  artifact-app-only-deploy:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Resolve image tag
-        id: vars
+      - name: Validate artifact
         run: |
-          if [ -n "${{ inputs.image_tag }}" ]; then
-            echo "image_tag=${{ inputs.image_tag }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "image_tag=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Validate build contexts
-        run: |
-          test -f ./package.json
-          test -f ./Dockerfile
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build app image
-        if: ${{ inputs.service != 'gateway' }}
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ./Dockerfile
-          push: true
-          build-args: |
-            SUPABASE_URL=${{ secrets.VITE_SUPABASE_URL }}
-            SUPABASE_ANON_KEY=${{ secrets.VITE_SUPABASE_ANON_KEY }}
-            VITE_SUPABASE_URL=${{ secrets.VITE_SUPABASE_URL }}
-            VITE_SUPABASE_ANON_KEY=${{ secrets.VITE_SUPABASE_ANON_KEY }}
-            PUBLIC_BASE_URL=https://agentezap-staging.187-127-18-177.sslip.io
-            APP_URL=https://agentezap-staging.187-127-18-177.sslip.io
-            VITE_PUBLIC_APP_URL=https://agentezap-staging.187-127-18-177.sslip.io
-          tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/agentezap-app:${{ steps.vars.outputs.image_tag }}
-          cache-from: type=gha,scope=agentezap-app
-          cache-to: type=gha,scope=agentezap-app,mode=max
-
-      - name: Build gateway image
-        if: ${{ inputs.service == 'gateway' || inputs.service == 'all' }}
-        uses: docker/build-push-action@v6
-        with:
-          context: ./2.0/gateway-wapi/source
-          file: ./2.0/gateway-wapi/source/Dockerfile
-          push: true
-          tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/agentezap-gateway:${{ steps.vars.outputs.image_tag }}
-          cache-from: type=gha,scope=agentezap-gateway
-          cache-to: type=gha,scope=agentezap-gateway,mode=max
+          test "${{ inputs.service }}" = "app"
+          test -f "./2.0/${{ inputs.image_tag }}.tgz"
 
       - name: Prepare SSH
         run: |
@@ -98,68 +37,14 @@ jobs:
           chmod 600 ~/.ssh/agentezap_vps_key
           ssh-keyscan -H "${{ secrets.AGENTEZAP_VPS_HOST }}" >> ~/.ssh/known_hosts
 
-      - name: Enforce safe gateway staging flags
-        if: ${{ inputs.service == 'gateway' || inputs.service == 'all' }}
+      - name: Upload artifact
+        run: |
+          scp -i ~/.ssh/agentezap_vps_key \
+            "./2.0/${{ inputs.image_tag }}.tgz" \
+            "${{ secrets.AGENTEZAP_VPS_USER }}@${{ secrets.AGENTEZAP_VPS_HOST }}:/tmp/${{ inputs.image_tag }}.tgz"
+
+      - name: Deploy app only
         run: |
           ssh -i ~/.ssh/agentezap_vps_key \
             "${{ secrets.AGENTEZAP_VPS_USER }}@${{ secrets.AGENTEZAP_VPS_HOST }}" \
-            'python3 -' <<'PY'
-          from pathlib import Path
-
-          compose_path = Path('/opt/agentezap-single/compose/compose.yml')
-          lines = compose_path.read_text().splitlines()
-
-          try:
-              service_start = lines.index('  gateway:')
-              env_start = next(i for i in range(service_start, len(lines)) if lines[i] == '    environment:')
-          except (ValueError, StopIteration) as exc:
-              raise SystemExit(f'gateway environment block not found in {compose_path}') from exc
-
-          env_end = len(lines)
-          for i in range(env_start + 1, len(lines)):
-              if lines[i].startswith('    ') and not lines[i].startswith('      '):
-                  env_end = i
-                  break
-
-          flags = {
-              'DISABLE_WHATSAPP_PROCESSING': '"true"',
-              'SKIP_WHATSAPP_RESTORE': '"true"',
-              'ENABLE_WA_SESSION_SNAPSHOTS': '"false"',
-              'WA_GATEWAY_EVENT_OUTBOX_DISABLED': '"true"',
-          }
-
-          for key, value in flags.items():
-              prefix = f'      {key}:'
-              for i in range(env_start + 1, env_end):
-                  if lines[i].startswith(prefix):
-                      lines[i] = f'{prefix} {value}'
-                      break
-              else:
-                  lines.insert(env_end, f'{prefix} {value}')
-                  env_end += 1
-
-          compose_path.write_text('\n'.join(lines) + '\n')
-          PY
-
-      - name: Deploy selected service
-        env:
-          GHCR_TOKEN: ${{ github.token }}
-        run: |
-          printf '%s' "$GHCR_TOKEN" | ssh -i ~/.ssh/agentezap_vps_key \
-            "${{ secrets.AGENTEZAP_VPS_USER }}@${{ secrets.AGENTEZAP_VPS_HOST }}" \
-            "docker login ghcr.io -u '${{ github.actor }}' --password-stdin"
-
-          set +e
-          ssh -i ~/.ssh/agentezap_vps_key \
-            "${{ secrets.AGENTEZAP_VPS_USER }}@${{ secrets.AGENTEZAP_VPS_HOST }}" \
-            "cd /opt/agentezap-single/compose && IMAGE_OWNER='${{ env.IMAGE_OWNER }}' REGISTRY='${{ env.REGISTRY }}' ./scripts/fast-deploy.sh '${{ inputs.service }}' '${{ steps.vars.outputs.image_tag }}'"
-          deploy_status=$?
-          set -e
-
-          if [ "${deploy_status}" -ne 0 ] && { [ "${{ inputs.service }}" = "gateway" ] || [ "${{ inputs.service }}" = "all" ]; }; then
-            ssh -i ~/.ssh/agentezap_vps_key \
-              "${{ secrets.AGENTEZAP_VPS_USER }}@${{ secrets.AGENTEZAP_VPS_HOST }}" \
-              "cd /opt/agentezap-single/compose && docker compose --env-file .env.runtime -f compose.yml ps gateway || true && docker logs --tail 220 agentezap-gateway || true && docker inspect --format='health={{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}} exit={{.State.ExitCode}} error={{.State.Error}}' agentezap-gateway || true"
-          fi
-
-          exit "${deploy_status}"
+            "set -euo pipefail; NAME='${{ inputs.image_tag }}'; rm -rf \"/tmp/\${NAME}\"; tar -xzf \"/tmp/\${NAME}.tgz\" -C /tmp; sed -i 's/\r$//' \"/tmp/\${NAME}/deploy_remote.sh\"; chmod +x \"/tmp/\${NAME}/deploy_remote.sh\"; bash \"/tmp/\${NAME}/deploy_remote.sh\""
