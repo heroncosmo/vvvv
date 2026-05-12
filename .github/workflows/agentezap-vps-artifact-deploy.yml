@@ -39,4 +39,4 @@ jobs:
           artifact_name="$(basename "${{ inputs.artifact_path }}")"
           ssh -i ~/.ssh/agentezap_vps_key \
             "${{ secrets.AGENTEZAP_VPS_USER }}@${{ secrets.AGENTEZAP_VPS_HOST }}" \
-            "set -euo pipefail; workdir=\"/tmp/\${artifact_name%.tgz}\"; rm -rf \"\$workdir\"; mkdir -p \"\$workdir\"; tar -xzf \"/tmp/\$artifact_name\" -C \"\$workdir\"; sed -i 's/\r$//' \"\$workdir/deploy_remote.sh\"; chmod +x \"\$workdir/deploy_remote.sh\"; \"\$workdir/deploy_remote.sh\""
+            "set -euo pipefail; artifact_name='${artifact_name}'; workdir=\"/tmp/\${artifact_name%.tgz}\"; rm -rf \"\$workdir\"; mkdir -p \"\$workdir\"; tar -xzf \"/tmp/\$artifact_name\" -C \"\$workdir\"; sed -i 's/\r$//' \"\$workdir/deploy_remote.sh\"; chmod +x \"\$workdir/deploy_remote.sh\"; \"\$workdir/deploy_remote.sh\""
