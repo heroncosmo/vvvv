@@ -1,0 +1,42 @@
+name: Artifact deploy AgenteZap VPS v88 autorun
+
+on:
+  push:
+    branches:
+      - codex/mauricio-catalog-v88-artifact-clean
+    paths:
+      - ".github/workflows/agentezap-vps-artifact-deploy-v88-autorun.yml"
+      - "2.0/tmp-deploy-mauricio-catalog-agentic-v88-20260513012451.tgz"
+
+jobs:
+  deploy-artifact:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate artifact
+        run: |
+          test -f "2.0/tmp-deploy-mauricio-catalog-agentic-v88-20260513012451.tgz"
+
+      - name: Prepare SSH
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.AGENTEZAP_VPS_SSH_PRIVATE_KEY }}" > ~/.ssh/agentezap_vps_key
+          chmod 600 ~/.ssh/agentezap_vps_key
+          ssh-keyscan -H "${{ secrets.AGENTEZAP_VPS_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Upload artifact
+        run: |
+          scp -i ~/.ssh/agentezap_vps_key "2.0/tmp-deploy-mauricio-catalog-agentic-v88-20260513012451.tgz" \
+            "${{ secrets.AGENTEZAP_VPS_USER }}@${{ secrets.AGENTEZAP_VPS_HOST }}:/tmp/"
+
+      - name: Run remote deploy
+        run: |
+          artifact_name="tmp-deploy-mauricio-catalog-agentic-v88-20260513012451.tgz"
+          ssh -i ~/.ssh/agentezap_vps_key \
+            "${{ secrets.AGENTEZAP_VPS_USER }}@${{ secrets.AGENTEZAP_VPS_HOST }}" \
+            "set -euo pipefail; artifact_name='${artifact_name}'; workdir=\"/tmp/\${artifact_name%.tgz}\"; rm -rf \"\$workdir\"; mkdir -p \"\$workdir\"; tar -xzf \"/tmp/\$artifact_name\" -C \"\$workdir\"; sed -i 's/\r$//' \"\$workdir/deploy_remote.sh\"; chmod +x \"\$workdir/deploy_remote.sh\"; \"\$workdir/deploy_remote.sh\""
