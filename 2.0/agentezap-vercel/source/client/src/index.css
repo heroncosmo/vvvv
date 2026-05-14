@@ -505,6 +505,10 @@
     scrollbar-width: none;
   }
 
+  .az-search-input {
+    padding-left: 48px !important;
+  }
+
   .az-chat-surface {
     background-color: #ece5dd;
     background-image:

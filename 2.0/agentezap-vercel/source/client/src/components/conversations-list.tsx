@@ -1739,8 +1739,8 @@ export function ConversationsList({
             placeholder={conversationScope === "groups" ? "Buscar grupos..." : "Buscar conversas..."}
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            className="pl-12"
-            style={{ fontSize: '16px', paddingLeft: '48px' }}
+            className="az-search-input pl-12"
+            style={{ fontSize: '16px' }}
             data-testid="input-search-conversations"
           />
         </div>
