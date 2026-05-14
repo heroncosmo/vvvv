@@ -104,6 +104,7 @@ Implementar o novo tema frontend do AgenteZap usando como referencia a pasta `C:
   - Retry `25837964757` abortou antes do build no marcador literal `sync_token`. Ajuste final de deploy: remover marcadores volateis de agendamento e proteger por `EXPECTED_BASE` exato, health, entrypoint/cmd, sessoes e marcadores historicos confirmados.
   - Retry `25838030291` abortou antes do build no marcador literal `concreteRequest`. Ajuste: remover tambem esse literal; `hasConcreteFirstOpeningRequest` permanece como marcador historico confirmado na imagem ativa.
   - Retry `25838097191` abortou antes do build no marcador literal `hasConcreteFirstOpeningRequest`. Ajuste: remover marcador especifico de cliente; manter marcadores gerais confirmados e a base Docker exata.
+  - Retry `25838161774` abortou antes do build no marcador literal `temporalToolContract`. Decisao final: para este delta frontend, nao usar grep de servidor como gate; a preservacao correta e `EXPECTED_BASE` exato + `FROM ${current_image}` + `COPY public /app/dist/public` + health/entrypoint/cmd/sessoes.
 - [pendente] Validar producao e enviar aviso para Rodrigo em `17991956944`.
 - [pendente] Atualizar memoria, Obsidian e resumo final.
 
