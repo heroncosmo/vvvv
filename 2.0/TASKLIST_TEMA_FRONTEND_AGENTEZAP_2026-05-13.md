@@ -102,6 +102,7 @@ Implementar o novo tema frontend do AgenteZap usando como referencia a pasta `C:
   - Retry `25837812957` abortou antes do build no marcador literal `shouldAutoRunAgendamento3DirectInSimulator`. Ajuste: remover o ultimo literal de agendamento da trava; o delta visual preserva a imagem ativa por `EXPECTED_BASE` exato e construcao `FROM ${current_image}`.
   - Retry `25837900059` abortou antes do build no marcador literal `syncMode`. Ajuste: manter somente marcadores confirmados na imagem ativa e a trava principal por tag Docker exata.
   - Retry `25837964757` abortou antes do build no marcador literal `sync_token`. Ajuste final de deploy: remover marcadores volateis de agendamento e proteger por `EXPECTED_BASE` exato, health, entrypoint/cmd, sessoes e marcadores historicos confirmados.
+  - Retry `25838030291` abortou antes do build no marcador literal `concreteRequest`. Ajuste: remover tambem esse literal; `hasConcreteFirstOpeningRequest` permanece como marcador historico confirmado na imagem ativa.
 - [pendente] Validar producao e enviar aviso para Rodrigo em `17991956944`.
 - [pendente] Atualizar memoria, Obsidian e resumo final.
 
