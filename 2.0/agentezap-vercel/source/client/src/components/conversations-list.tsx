@@ -1740,7 +1740,7 @@ export function ConversationsList({
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             className="pl-12"
-            style={{ fontSize: '16px', paddingLeft: '3rem' }}
+            style={{ fontSize: '16px', paddingLeft: '48px' }}
             data-testid="input-search-conversations"
           />
         </div>
