@@ -98,6 +98,7 @@ Implementar o novo tema frontend do AgenteZap usando como referencia a pasta `C:
   - Novo artefato sequencial criado como `2.0/tmp-deploy-frontend-theme-v112-20260513231000.tgz`, tag `agentezap-app:frontend-theme-v112-20260513231000`, derivada da imagem ativa `agentezap-app:agendamento3-agent-test-v111-20260513230011` e preservando o marcador `Agendamento 3.0 direct simulator fallback`.
   - Workflow `25837498498` abortou durante a checagem pre-deploy por marcador literal especifico ausente na imagem ativa. Ajuste seguro: manter a exigencia da tag ativa `agentezap-app:agendamento3-agent-test-v111-20260513230011` e dos marcadores funcionais gerais, mas remover esse grep literal; o delta continua copiando apenas `/app/dist/public` sobre a imagem ativa.
   - Retry `25837652824` abortou antes do build no marcador literal `freebusy.query`, tambem ausente na imagem ativa atual. Ajuste: remover esse grep literal sem alterar o modelo de seguranca principal (`FROM imagem ativa exata` + `COPY public /app/dist/public` + health/sessoes).
+  - Retry `25837721530` abortou antes do build no marcador literal `agendamento3_next_available_slot`. Ajuste: nao usar literais de implementacao agendamento como trava obrigatoria para um delta visual; preservar por tag Docker ativa exata, health, entrypoint/cmd, sessoes e marcadores ja presentes.
 - [pendente] Validar producao e enviar aviso para Rodrigo em `17991956944`.
 - [pendente] Atualizar memoria, Obsidian e resumo final.
 
