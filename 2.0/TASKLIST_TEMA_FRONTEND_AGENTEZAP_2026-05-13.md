@@ -105,6 +105,7 @@ Implementar o novo tema frontend do AgenteZap usando como referencia a pasta `C:
   - Retry `25838030291` abortou antes do build no marcador literal `concreteRequest`. Ajuste: remover tambem esse literal; `hasConcreteFirstOpeningRequest` permanece como marcador historico confirmado na imagem ativa.
   - Retry `25838097191` abortou antes do build no marcador literal `hasConcreteFirstOpeningRequest`. Ajuste: remover marcador especifico de cliente; manter marcadores gerais confirmados e a base Docker exata.
   - Retry `25838161774` abortou antes do build no marcador literal `temporalToolContract`. Decisao final: para este delta frontend, nao usar grep de servidor como gate; a preservacao correta e `EXPECTED_BASE` exato + `FROM ${current_image}` + `COPY public /app/dist/public` + health/entrypoint/cmd/sessoes.
+  - Retry `25838225306` abortou na validacao do frontend porque o `index.html` nao referencia `main-CxSvVP57.js` diretamente; ele referencia o bootstrap Vite `index-DDQbuOnA.js`, que carrega `main-CxSvVP57.js` e `main-B3ug0T3Y.css`. Script ajustado para validar a cadeia real.
 - [pendente] Validar producao e enviar aviso para Rodrigo em `17991956944`.
 - [pendente] Atualizar memoria, Obsidian e resumo final.
 
