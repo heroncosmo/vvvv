@@ -94,6 +94,8 @@ Implementar o novo tema frontend do AgenteZap usando como referencia a pasta `C:
   - Artefato novo criado como delta publico pequeno: `2.0/tmp-deploy-frontend-theme-v111-20260513225623.tgz` (`~2 MB`), contendo `deploy_remote.sh`, `public/index.html`, `sw.js`, manifest/PWA version e assets JS/CSS/fontes necessarios.
   - Primeira tentativa de workflow `25837214012` abortou corretamente antes de trocar o app: a VPS ja estava em `agentezap-app:agendamento3-sync-token-v110-20260513225124`, healthy, restart `0`, sessoes `305/305`.
   - Artefato rebaseado para usar como base esperada `agentezap-app:agendamento3-sync-token-v110-20260513225124` e conferir marcadores de v104/v106/v107/v108/v109/v110 antes/depois do delta visual. Se a VPS estiver em outra imagem, o script aborta sem trocar o app.
+  - Segunda tentativa de workflow `25837408783` tambem abortou corretamente antes de trocar o app: outro deploy publicou `agentezap-app:agendamento3-agent-test-v111-20260513230011`, healthy, restart `0`, sessoes `304/304`.
+  - Novo artefato sequencial criado como `2.0/tmp-deploy-frontend-theme-v112-20260513231000.tgz`, tag `agentezap-app:frontend-theme-v112-20260513231000`, derivada da imagem ativa `agentezap-app:agendamento3-agent-test-v111-20260513230011` e preservando o marcador `Agendamento 3.0 direct simulator fallback`.
 - [pendente] Validar producao e enviar aviso para Rodrigo em `17991956944`.
 - [pendente] Atualizar memoria, Obsidian e resumo final.
 
