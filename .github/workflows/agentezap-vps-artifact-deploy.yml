@@ -1,4 +1,4 @@
-name: Artifact deploy AgenteZap VPS
+﻿name: Artifact deploy AgenteZap VPS
 
 on:
   workflow_dispatch:
@@ -27,16 +27,15 @@ jobs:
           mkdir -p ~/.ssh
           printf '%s\n' "${{ secrets.AGENTEZAP_VPS_SSH_PRIVATE_KEY }}" > ~/.ssh/agentezap_vps_key
           chmod 600 ~/.ssh/agentezap_vps_key
-          ssh-keyscan -H "${{ secrets.AGENTEZAP_VPS_HOST }}" >> ~/.ssh/known_hosts
 
       - name: Upload artifact
         run: |
-          scp -i ~/.ssh/agentezap_vps_key "${{ inputs.artifact_path }}" \
-            "${{ secrets.AGENTEZAP_VPS_USER }}@${{ secrets.AGENTEZAP_VPS_HOST }}:/tmp/"
+          scp -i ~/.ssh/agentezap_vps_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "${{ inputs.artifact_path }}" \
+            "${{ secrets.AGENTEZAP_VPS_USER }}@187.77.33.14:/tmp/"
 
       - name: Run remote deploy
         run: |
           artifact_name="$(basename "${{ inputs.artifact_path }}")"
-          ssh -i ~/.ssh/agentezap_vps_key \
-            "${{ secrets.AGENTEZAP_VPS_USER }}@${{ secrets.AGENTEZAP_VPS_HOST }}" \
+          ssh -i ~/.ssh/agentezap_vps_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            "${{ secrets.AGENTEZAP_VPS_USER }}@187.77.33.14" \
             "set -euo pipefail; artifact_name='${artifact_name}'; workdir=\"/tmp/\${artifact_name%.tgz}\"; rm -rf \"\$workdir\"; mkdir -p \"\$workdir\"; tar -xzf \"/tmp/\$artifact_name\" -C \"\$workdir\"; sed -i 's/\r$//' \"\$workdir/deploy_remote.sh\"; chmod +x \"\$workdir/deploy_remote.sh\"; \"\$workdir/deploy_remote.sh\""
