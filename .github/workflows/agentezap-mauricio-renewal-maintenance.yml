@@ -66,6 +66,7 @@ jobs:
               const currentUpdate = await client.query(
                 `UPDATE subscriptions
                     SET plan_id = $2,
+                        status = CASE WHEN status = 'pending_pix' THEN 'pending' ELSE status END,
                         coupon_price = $4::numeric,
                         metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object(
                           'createdFrom', 'plans_checkout',
