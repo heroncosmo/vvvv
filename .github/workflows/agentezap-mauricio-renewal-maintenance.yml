@@ -1,0 +1,137 @@
+name: Mauricio renewal maintenance
+
+on:
+  push:
+    branches:
+      - codex/mauricio-renewal-300-maintenance
+  workflow_dispatch:
+
+jobs:
+  run-maintenance:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Prepare SSH
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.AGENTEZAP_VPS_SSH_PRIVATE_KEY }}" > ~/.ssh/agentezap_vps_key
+          chmod 600 ~/.ssh/agentezap_vps_key
+
+      - name: Apply scoped renewal agreement
+        run: |
+          ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            -i ~/.ssh/agentezap_vps_key \
+            "${{ secrets.AGENTEZAP_VPS_USER }}@187.77.33.14" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          app_container="$(docker ps --format '{{.Names}}' | grep -E 'agentezap.*app|app' | head -n 1)"
+          if [ -z "$app_container" ]; then
+            echo "app container not found" >&2
+            docker ps --format '{{.Names}}'
+            exit 1
+          fi
+          docker exec -i "$app_container" node <<'NODE'
+          const { Pool } = require("pg");
+
+          const userId = "a7f1edc1-ae45-45a5-b382-2a1024507355";
+          const currentSubscriptionId = "61591265-9108-4335-94f1-079af8df7ad6";
+          const configuredPlanId = "2b2510b4-cb58-4dd4-ab83-f6b4fdf2fe1f";
+          const agreedAmount = "299.99";
+
+          const pool = new Pool({
+            connectionString: process.env.DATABASE_URL || process.env.DATABASE_URL_DIRECT,
+            ssl: { rejectUnauthorized: false },
+            max: 1,
+          });
+
+          (async () => {
+            const client = await pool.connect();
+            try {
+              await client.query("BEGIN");
+              const before = await client.query(
+                `SELECT s.id, s.plan_id, p.nome, p.valor, s.status, s.coupon_price, s.metadata
+                   FROM subscriptions s
+                   LEFT JOIN plans p ON p.id = s.plan_id
+                  WHERE s.user_id = $1
+                  ORDER BY s.created_at DESC
+                  LIMIT 5`,
+                [userId],
+              );
+
+              const marker = {
+                source: "support_agreement",
+                reason: "mauricio_mfc_renewal_price_2026_05_28",
+                amount: agreedAmount,
+                appliedAt: new Date().toISOString(),
+              };
+
+              const currentUpdate = await client.query(
+                `UPDATE subscriptions
+                    SET plan_id = $2,
+                        coupon_price = $4,
+                        metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object(
+                          'createdFrom', 'plans_checkout',
+                          'checkoutAmount', $4,
+                          'checkoutAmountAfterCoupon', $4,
+                          'checkoutRecurringAmount', $4,
+                          'checkoutPlanName', 'IA configurada e pronta',
+                          'checkoutTier', 'configured',
+                          'manualRenewalAgreement', $5::jsonb
+                        ),
+                        updated_at = NOW()
+                  WHERE id = $1
+                    AND user_id = $3
+                  RETURNING id, plan_id, status, coupon_price, metadata->>'checkoutAmountAfterCoupon' AS checkout_amount, metadata->>'checkoutRecurringAmount' AS recurring_amount`,
+                [currentSubscriptionId, configuredPlanId, userId, agreedAmount, JSON.stringify(marker)],
+              );
+
+              const historyUpdate = await client.query(
+                `UPDATE subscriptions s
+                    SET plan_id = $2,
+                        metadata = COALESCE(s.metadata, '{}'::jsonb) || jsonb_build_object(
+                          'checkoutRecurringAmount', $3,
+                          'checkoutPlanName', 'IA configurada e pronta',
+                          'manualRenewalAgreement', $4::jsonb
+                        ),
+                        updated_at = NOW()
+                  WHERE s.user_id = $1
+                    AND s.id IN (
+                      SELECT DISTINCT ph.subscription_id
+                        FROM payment_history ph
+                       WHERE ph.user_id = $1
+                         AND ph.subscription_id IS NOT NULL
+                         AND ph.status IN ('approved', 'paid')
+                         AND ph.amount::numeric >= 1000
+                    )
+                  RETURNING id, plan_id, metadata->>'checkoutRecurringAmount' AS recurring_amount`,
+                [userId, configuredPlanId, agreedAmount, JSON.stringify(marker)],
+              );
+
+              const after = await client.query(
+                `SELECT s.id, s.plan_id, p.nome, p.valor, s.status, s.coupon_price,
+                        s.metadata->>'checkoutAmountAfterCoupon' AS checkout_amount,
+                        s.metadata->>'checkoutRecurringAmount' AS recurring_amount
+                   FROM subscriptions s
+                   LEFT JOIN plans p ON p.id = s.plan_id
+                  WHERE s.user_id = $1
+                  ORDER BY s.created_at DESC
+                  LIMIT 5`,
+                [userId],
+              );
+              await client.query("COMMIT");
+              console.log(JSON.stringify({
+                ok: true,
+                before: before.rows,
+                currentUpdate: currentUpdate.rows,
+                historyUpdate: historyUpdate.rows,
+                after: after.rows,
+              }, null, 2));
+            } catch (error) {
+              await client.query("ROLLBACK").catch(() => {});
+              console.error(error);
+              process.exitCode = 1;
+            } finally {
+              client.release();
+              await pool.end();
+            }
+          })();
+          NODE
+          REMOTE
