@@ -105,6 +105,31 @@ jobs:
                 [userId, configuredPlanId, agreedAmount, JSON.stringify(marker)],
               );
 
+              const receiptUpdate = await client.query(
+                `UPDATE payment_receipts
+                    SET plan_id = $2,
+                        updated_at = NOW()
+                  WHERE user_id = $1
+                    AND status = 'approved'
+                    AND amount::numeric >= 299
+                    AND amount::numeric < 300
+                  RETURNING id, subscription_id, plan_id, amount, status`,
+                [userId, configuredPlanId],
+              );
+
+              const conversationUpdate = await client.query(
+                `UPDATE conversations
+                    SET needs_human_attention = false,
+                        attention_priority = NULL,
+                        attention_reason = NULL,
+                        attention_confidence = NULL,
+                        attention_qualified_at = NULL,
+                        unread_count = 0,
+                        updated_at = NOW()
+                  WHERE id = '1783c7ff-36b2-4b50-ace7-9371b44228e5'
+                  RETURNING id, needs_human_attention, unread_count`,
+              );
+
               const after = await client.query(
                 `SELECT s.id, s.plan_id, p.nome, p.valor, s.status, s.coupon_price,
                         s.metadata->>'checkoutAmountAfterCoupon' AS checkout_amount,
@@ -122,6 +147,8 @@ jobs:
                 before: before.rows,
                 currentUpdate: currentUpdate.rows,
                 historyUpdate: historyUpdate.rows,
+                receiptUpdate: receiptUpdate.rows,
+                conversationUpdate: conversationUpdate.rows,
                 after: after.rows,
               }, null, 2));
             } catch (error) {
