@@ -143,9 +143,13 @@ jobs:
                         updated_at = NOW()
                   WHERE user_id = $1
                     AND id <> $2
-                    AND status = 'pending'
-                    AND created_at < TIMESTAMP '2026-05-01'
-                  RETURNING id, status, plan_id, created_at`,
+                    AND status IN ('pending', 'pending_pix')
+                    AND (
+                      created_at < TIMESTAMP '2026-05-01'
+                      OR COALESCE(metadata->>'checkoutAmountAfterCoupon', metadata->>'checkoutAmount', '') IN ('1000.00', '1000')
+                      OR plan_id IN ('409c574d-8f2e-4b00-b77c-d2a64a14528c', 'aac8934e-2d5c-4275-a2ea-d81999085ccb')
+                    )
+                  RETURNING id, status, plan_id, created_at, metadata->>'checkoutAmountAfterCoupon' AS checkout_amount`,
                 [userId, currentSubscriptionId],
               );
 
