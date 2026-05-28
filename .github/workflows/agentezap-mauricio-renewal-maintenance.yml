@@ -66,12 +66,12 @@ jobs:
               const currentUpdate = await client.query(
                 `UPDATE subscriptions
                     SET plan_id = $2,
-                        coupon_price = $4,
+                        coupon_price = $4::numeric,
                         metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object(
                           'createdFrom', 'plans_checkout',
-                          'checkoutAmount', $4,
-                          'checkoutAmountAfterCoupon', $4,
-                          'checkoutRecurringAmount', $4,
+                          'checkoutAmount', $4::text,
+                          'checkoutAmountAfterCoupon', $4::text,
+                          'checkoutRecurringAmount', $4::text,
                           'checkoutPlanName', 'IA configurada e pronta',
                           'checkoutTier', 'configured',
                           'manualRenewalAgreement', $5::jsonb
@@ -87,7 +87,7 @@ jobs:
                 `UPDATE subscriptions s
                     SET plan_id = $2,
                         metadata = COALESCE(s.metadata, '{}'::jsonb) || jsonb_build_object(
-                          'checkoutRecurringAmount', $3,
+                          'checkoutRecurringAmount', $3::text,
                           'checkoutPlanName', 'IA configurada e pronta',
                           'manualRenewalAgreement', $4::jsonb
                         ),
