@@ -130,6 +130,25 @@ jobs:
                   RETURNING id, needs_human_attention, unread_count`,
               );
 
+              const stalePendingUpdate = await client.query(
+                `UPDATE subscriptions
+                    SET status = 'cancelled',
+                        data_fim = COALESCE(data_fim, NOW()),
+                        pending_receipt = false,
+                        metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object(
+                          'cancelledBySupportMaintenance', true,
+                          'cancelledReason', 'stale_pending_checkout_before_renewal_2026_05_28',
+                          'cancelledAt', NOW()
+                        ),
+                        updated_at = NOW()
+                  WHERE user_id = $1
+                    AND id <> $2
+                    AND status = 'pending'
+                    AND created_at < TIMESTAMP '2026-05-01'
+                  RETURNING id, status, plan_id, created_at`,
+                [userId, currentSubscriptionId],
+              );
+
               const after = await client.query(
                 `SELECT s.id, s.plan_id, p.nome, p.valor, s.status, s.coupon_price,
                         s.metadata->>'checkoutAmountAfterCoupon' AS checkout_amount,
@@ -149,6 +168,7 @@ jobs:
                 historyUpdate: historyUpdate.rows,
                 receiptUpdate: receiptUpdate.rows,
                 conversationUpdate: conversationUpdate.rows,
+                stalePendingUpdate: stalePendingUpdate.rows,
                 after: after.rows,
               }, null, 2));
             } catch (error) {
