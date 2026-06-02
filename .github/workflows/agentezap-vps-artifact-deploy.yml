@@ -21,6 +21,11 @@ jobs:
       - name: Validate artifact
         run: |
           test -f "${{ inputs.artifact_path }}"
+          test -s "${{ inputs.artifact_path }}"
+          gzip -t "${{ inputs.artifact_path }}"
+          tar -tzf "${{ inputs.artifact_path }}" >/dev/null
+          stat -c 'artifact_size=%s' "${{ inputs.artifact_path }}"
+          sha256sum "${{ inputs.artifact_path }}" | tee /tmp/agentezap_artifact.sha256
 
       - name: Prepare SSH
         run: |
@@ -33,6 +38,11 @@ jobs:
         run: |
           scp -i ~/.ssh/agentezap_vps_key "${{ inputs.artifact_path }}" \
             "${{ secrets.AGENTEZAP_VPS_USER }}@187.77.33.14:/tmp/"
+          artifact_name="$(basename "${{ inputs.artifact_path }}")"
+          local_sha="$(cut -d ' ' -f 1 /tmp/agentezap_artifact.sha256)"
+          ssh -i ~/.ssh/agentezap_vps_key \
+            "${{ secrets.AGENTEZAP_VPS_USER }}@187.77.33.14" \
+            "set -euo pipefail; cd /tmp; test -s \"${artifact_name}\"; gzip -t \"${artifact_name}\"; remote_sha=\"\$(sha256sum \"${artifact_name}\" | cut -d ' ' -f 1)\"; echo remote_artifact_size=\$(stat -c %s \"${artifact_name}\"); test \"\$remote_sha\" = \"${local_sha}\""
 
       - name: Run remote deploy
         run: |
