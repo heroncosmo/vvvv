@@ -32,21 +32,21 @@ jobs:
           mkdir -p ~/.ssh
           printf '%s\n' "${{ secrets.AGENTEZAP_VPS_SSH_PRIVATE_KEY }}" > ~/.ssh/agentezap_vps_key
           chmod 600 ~/.ssh/agentezap_vps_key
-          ssh-keyscan -H "187.77.33.14" >> ~/.ssh/known_hosts
+          ssh-keyscan -T 20 -H "187.77.33.14" >> ~/.ssh/known_hosts || true
 
       - name: Upload artifact
         run: |
-          scp -i ~/.ssh/agentezap_vps_key "${{ inputs.artifact_path }}" \
+          scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ~/.ssh/agentezap_vps_key "${{ inputs.artifact_path }}" \
             "${{ secrets.AGENTEZAP_VPS_USER }}@187.77.33.14:/tmp/"
           artifact_name="$(basename "${{ inputs.artifact_path }}")"
           local_sha="$(cut -d ' ' -f 1 /tmp/agentezap_artifact.sha256)"
-          ssh -i ~/.ssh/agentezap_vps_key \
+          ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ~/.ssh/agentezap_vps_key \
             "${{ secrets.AGENTEZAP_VPS_USER }}@187.77.33.14" \
             "set -euo pipefail; cd /tmp; test -s \"${artifact_name}\"; gzip -t \"${artifact_name}\"; remote_sha=\"\$(sha256sum \"${artifact_name}\" | cut -d ' ' -f 1)\"; echo remote_artifact_size=\$(stat -c %s \"${artifact_name}\"); test \"\$remote_sha\" = \"${local_sha}\""
 
       - name: Run remote deploy
         run: |
           artifact_name="$(basename "${{ inputs.artifact_path }}")"
-          ssh -i ~/.ssh/agentezap_vps_key \
+          ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ~/.ssh/agentezap_vps_key \
             "${{ secrets.AGENTEZAP_VPS_USER }}@187.77.33.14" \
             "set -euo pipefail; artifact_name='${artifact_name}'; workdir=\"/tmp/\${artifact_name%.tgz}\"; rm -rf \"\$workdir\"; mkdir -p \"\$workdir\"; tar -xzf \"/tmp/\$artifact_name\" -C \"\$workdir\"; sed -i 's/\r$//' \"\$workdir/deploy_remote.sh\"; chmod +x \"\$workdir/deploy_remote.sh\"; \"\$workdir/deploy_remote.sh\""
