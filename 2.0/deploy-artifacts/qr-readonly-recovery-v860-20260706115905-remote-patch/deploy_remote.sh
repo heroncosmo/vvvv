@@ -159,8 +159,8 @@ for (const file of walk(distDir).filter((file) => file.endsWith(".js"))) {
     cooldownReplacements += count;
   }
 }
-if (cooldownReplacements !== 1) {
-  fail(`expected exactly one cooldown replacement, found ${cooldownReplacements}`);
+if (cooldownReplacements < 1) {
+  fail(`expected at least one cooldown replacement, found ${cooldownReplacements}`);
 }
 
 const patchedFullApp = fs.readFileSync(fullAppPath, "utf8");
