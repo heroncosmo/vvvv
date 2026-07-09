@@ -1,0 +1,179 @@
+{
+  "timestamp": "2026-03-03T23:12:34.404Z",
+  "baseUrl": "https://agentezap.online",
+  "totalCenarios": 8,
+  "passados": 8,
+  "falhados": 0,
+  "cenarios": [
+    {
+      "id": "cenario-1-novo-numero-oi",
+      "passed": true,
+      "phone": "551143444901",
+      "messages": [
+        "oi"
+      ],
+      "responses": [
+        {
+          "text": "Vamos comecar! Me conta sobre seu negocio:\n\n- Qual o *nome* da sua empresa/negocio?\n- O que voce *vende ou oferece*?\n- Quem e seu *cliente ideal*?\n\nPode me contar tudo de uma vez, sem problema!",
+          "actions": {},
+          "testLink": null
+        }
+      ],
+      "error": null
+    },
+    {
+      "id": "cenario-2-nova-conta",
+      "passed": true,
+      "phone": "551143575702",
+      "testToken": "cb557801a7d541ba",
+      "messages": [
+        "oi",
+        "quero contratar",
+        "Empresa Teste E2E, vendas online",
+        "Quero que responda dúvidas e venda",
+        "Não uso agendamento"
+      ],
+      "responses": [
+        {
+          "text": "Vamos comecar! Me conta sobre seu negocio:\n\n- Qual o *nome* da sua empresa/negocio?\n- O que voce *vende ou oferece*?\n- Quem e seu *cliente ideal*?\n\nPode me contar tudo de uma vez, sem problema!",
+          "actions": {},
+          "testLink": null
+        },
+        {
+          "text": "Otimo! Agora me diz: como voce quer que seu agente se comporte?\n\nEx: _formal_, _descontraido_, _direto ao ponto_, _amigavel_...\n\nOu me conta o que ele deve fazer quando o cliente entrar em contato.",
+          "actions": {},
+          "testLink": null
+        },
+        {
+          "text": "Otimo! Agora me diz: como voce quer que seu agente se comporte?\n\nEx: _formal_, _descontraido_, _direto ao ponto_, _amigavel_...\n\nOu me conta o que ele deve fazer quando o cliente entrar em contato.",
+          "actions": {},
+          "testLink": null
+        },
+        {
+          "text": "Perfeito! Sobre o acompanhamento automatico:\n\nVoce quer que o agente faca *follow-up automatico* com clientes que nao responderam?\n\nOu prefere que ele *so atenda* quando o cliente entrar em contato?",
+          "actions": {},
+          "testLink": null
+        },
+        {
+          "text": "Perfeito. Eu já criei seu agente gratuitamente para Negócio de Cliente e deixei tudo pronto pra você conhecer agora.\n\nTeste seu agente aqui: https://agentezap.online/test/cb557801a7d541ba\n\nSeu acesso:\nEmail: 551143575702@agentezap.online\nSenha temporária: AZ-BVSBHG\nPainel: https://agentezap.online/meu-agente-ia?al=NTUxMTQzNTc1NzAyQGFnZW50ZXphcC5vbmxpbmU6QVotQlZTQkhH\nEscolher plano: https://agentezap.online/plans?al=NTUxMTQzNTc1NzAyQGFnZW50ZXphcC5vbmxpbmU6QVotQlZTQkhH\nConectar WhatsApp: https://agentezap.online/conexao?al=NTUxMTQzNTc1NzAyQGFnZW50ZXphcC5vbmxpbmU6QVotQlZTQkhH\n\nPode entrar, testar e depois, se quiser, eu continuo calibrando por aqui no WhatsApp. No gratuito você pode fazer até 5 calibrações do agente por dia por aqui no WhatsApp (perguntas e dúvidas não contam); com plano ativo fica ilimitado. No painel você também consegue trocar a senha quando quiser.",
+          "actions": {
+            "testAccountCredentials": {
+              "email": "551143575702@agentezap.online",
+              "password": "AZ-BVSBHG",
+              "loginUrl": "https://agentezap.online",
+              "simulatorToken": "cb557801a7d541ba",
+              "isExistingAccount": false
+            }
+          },
+          "testLink": null
+        }
+      ],
+      "error": null
+    },
+    {
+      "id": "cenario-3-editar-prompt",
+      "passed": true,
+      "phone": "551145222703",
+      "scenario3Token": "1f7b40375f0541b1",
+      "messages": [
+        "quero meu agente mais formal",
+        "sim"
+      ],
+      "responses": [
+        {
+          "text": "Vou ajustar o tom do seu agente para um estilo **formal** agora. Confirma essa alteração?\n\nConfirma? (sim / não)",
+          "actions": {},
+          "testLink": null
+        },
+        {
+          "text": "✅ Prompt atualizado com sucesso!",
+          "actions": {},
+          "testLink": null
+        }
+      ],
+      "error": null
+    },
+    {
+      "id": "cenario-4-salvar-midia",
+      "passed": true,
+      "phone": "551150869404",
+      "messages": [
+        "quando pedirem o cardápio (com imagem)"
+      ],
+      "responses": [
+        {
+          "text": "✅ Mídia *CARDÁPIO_-_{{NOME_DO_NEGÓCIO}}* salva com sucesso!\nVou usá-la quando: \"quando o cliente pedir o cardápio, menu ou perguntar sobre os produtos/pratos disponíveis\".",
+          "actions": {},
+          "testLink": null
+        }
+      ],
+      "error": null
+    },
+    {
+      "id": "cenario-5-conectar-whatsapp",
+      "passed": true,
+      "phone": "551152970805",
+      "connectionToken": "14c5c3bb-8535-4e98-82dc-743e02a9ddb5",
+      "messages": [
+        "quero conectar meu WhatsApp"
+      ],
+      "responses": [
+        {
+          "text": "🔗 Seu link de acesso direto:\nhttps://agentezap.online/conexao?token=14c5c3bb-8535-4e98-82dc-743e02a9ddb5\n\n⚠️ Válido por *30 minutos*. Não compartilhe com outras pessoas.",
+          "actions": {},
+          "testLink": null
+        }
+      ],
+      "error": null
+    },
+    {
+      "id": "cenario-6-preco-planos",
+      "passed": true,
+      "phone": "551154776206",
+      "messages": [
+        "quanto custa o plano?"
+      ],
+      "responses": [
+        {
+          "text": "O plano do AgentZap e:\n\n- *Mensal*: R$ 197/mes\n- *Anual*: R$ 97/mes (economia de 51%!)\n\nVoce pode assine e testar GRATIS antes de decidir! Acesse: https://agentezap.online/plans\n\nVamos continuar configurando seu agente? Me conta sobre seu negocio!",
+          "actions": {},
+          "testLink": null
+        }
+      ],
+      "error": null
+    },
+    {
+      "id": "cenario-7-como-funciona",
+      "passed": true,
+      "phone": "551154886107",
+      "messages": [
+        "como funciona o AgentZap?"
+      ],
+      "responses": [
+        {
+          "text": "E simples! Voce me conta sobre seu negocio, eu crio seu agente, voce testa gratis e se gostar, ativa!\n\nVamos la? Me conta sobre seu negocio!",
+          "actions": {},
+          "testLink": null
+        }
+      ],
+      "error": null
+    },
+    {
+      "id": "cenario-8-simulador-prompt-atualizado",
+      "passed": true,
+      "phone": "551145222703",
+      "testToken": "1f7b40375f0541b1",
+      "messages": [
+        "Olá, como vocês podem me ajudar?"
+      ],
+      "responses": [
+        {
+          "response": "E aí! Tudo bem? Aqui é o Pedro da *Negócio de Cliente* 😊\n\nA gente tá aqui pra te ajudar com *informações sobre produtos e serviços*, tirar dúvidas e te guiar pra melhor solução pra você. Me conta: o que você tá procurando hoje? Assim eu já te ajudo direitinho!\n\n(Se quiser, posso te mostrar nossas opções ou explicar como funciona algo específico, é só me dizer!)",
+          "mediaActions": []
+        }
+      ],
+      "responseText": "E aí! Tudo bem? Aqui é o Pedro da *Negócio de Cliente* 😊\n\nA gente tá aqui pra te ajudar com *informações sobre produtos e serviços*, tirar dúvidas e te guiar pra melhor solução pra você. Me conta: o ",
+      "error": null
+    }
+  ]
+}

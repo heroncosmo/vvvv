@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <rect width="64" height="64" rx="18" fill="url(#brandGradient)" />
+  <path
+    d="M18 22H46L42.5 31H21.5L18 22Z"
+    fill="white"
+  />
+  <path
+    d="M22 31H42V46H22V31Z"
+    stroke="white"
+    stroke-width="4"
+    stroke-linejoin="round"
+  />
+  <path
+    d="M28 46V36H36V46"
+    fill="white"
+  />
+  <path
+    d="M24 31V46"
+    stroke="white"
+    stroke-width="4"
+    stroke-linecap="round"
+  />
+  <path
+    d="M40 31V46"
+    stroke="white"
+    stroke-width="4"
+    stroke-linecap="round"
+  />
+  <defs>
+    <linearGradient id="brandGradient" x1="10" y1="6" x2="55" y2="58" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#14B8A6" />
+      <stop offset="1" stop-color="#059669" />
+    </linearGradient>
+  </defs>
+</svg>

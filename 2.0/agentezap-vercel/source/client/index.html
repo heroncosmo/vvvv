@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+  <head>
+    <!-- Google Tag Manager -->
+    <script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':
+    new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],
+    j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
+    'https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);
+    })(window,document,'script','dataLayer','GTM-5XXK4FSL');</script>
+    <!-- End Google Tag Manager -->
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/png" href="/favicon.png?v=%VITE_PWA_VERSION%" />
+    <link rel="manifest" href="/site.webmanifest?v=%VITE_PWA_VERSION%" />
+    <link rel="apple-touch-icon" href="/pwa-192.png?v=%VITE_PWA_VERSION%" />
+    <meta name="agentezap-pwa-version" content="%VITE_PWA_VERSION%" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, interactive-widget=resizes-content" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="AgenteZap" />
+    <title>AgenteZap - IA para WhatsApp | Plataforma Tudo-em-Um</title>
+    <meta name="description" content="Plataforma tudo-em-um que transforma seu WhatsApp no centro de vendas, atendimento, agenda e CRM com IA 24/7">
+    <meta name="keywords" content="agentezap, whatsapp, ia, crm, vendas, atendimento, agenda, automacao, saas">
+    <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1">
+    <meta name="theme-color" content="#0f766e">
+    <link rel="canonical" href="https://agentezap.online/">
+    <meta property="og:locale" content="pt_BR">
+    <meta property="og:site_name" content="AgenteZap">
+    <meta property="og:type" content="website">
+    <meta property="og:title" content="AgenteZap - IA para WhatsApp | Plataforma Tudo-em-Um">
+    <meta property="og:description" content="Plataforma completa de IA para WhatsApp com CRM, atendimento, automacao, agendamentos e campanhas no mesmo lugar.">
+    <meta property="og:url" content="https://agentezap.online/">
+    <meta property="og:image" content="https://agentezap.online/tutorial-screenshots/01-dashboard.png">
+    <meta property="og:image:width" content="1200">
+    <meta property="og:image:height" content="630">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="AgenteZap - IA para WhatsApp | Plataforma Tudo-em-Um">
+    <meta name="twitter:description" content="Automatize vendas, atendimento, CRM e agendamentos no WhatsApp com IA e operacao centralizada.">
+    <meta name="twitter:image" content="https://agentezap.online/tutorial-screenshots/01-dashboard.png">
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@graph": [
+          {
+            "@type": "Organization",
+            "name": "AgenteZap",
+            "url": "https://agentezap.online/",
+            "logo": "https://agentezap.online/assets/img/logo-findeas.svg"
+          },
+          {
+            "@type": "SoftwareApplication",
+            "name": "AgenteZap",
+            "applicationCategory": "BusinessApplication",
+            "operatingSystem": "Web",
+            "url": "https://agentezap.online/",
+            "description": "Plataforma de IA para WhatsApp com CRM, atendimento, campanhas, agendamentos e automacao comercial."
+          }
+        ]
+      }
+    </script>
+    <!-- Remix Icon -->
+    <link rel="stylesheet" href="/assets/icon/remixicon/remixicon.css">
+    <!-- Plyr - HTML5, YouTube and Vimeo media player -->
+    <link rel="stylesheet" href="/assets/css/plyr.min.css">
+    <!-- AOS (Animate On Scroll) -->
+    <link rel="stylesheet" href="/assets/css/aos.min.css">
+    <!-- Swiper - Touch Slider -->
+    <link rel="stylesheet" href="/assets/css/swiper.min.css">
+    <!-- Findeas -->
+    <link rel="stylesheet" href="/assets/css/findeas.min.css">
+  </head>
+  <body>
+    <!-- Google Tag Manager (noscript) -->
+    <noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-5XXK4FSL"
+    height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
+    <!-- End Google Tag Manager (noscript) -->
+    <div id="root"></div>
+    <!-- jQuery -->
+    <script src="/assets/js/jquery.min.js"></script>
+    <!-- Popper -->
+    <script src="/assets/js/popper.min.js"></script>
+    <!-- Bootstrap -->
+    <script src="/assets/js/bootstrap.min.js"></script>
+    <!-- SVG Inject -->
+    <script src="/assets/js/svg-inject.min.js"></script>
+    <!-- AOS (Animate On Scroll) -->
+    <script src="/assets/js/aos.min.js"></script>
+    <!-- Medium Zoom -->
+    <script src="/assets/js/medium-zoom.min.js"></script>
+    <!-- Plyr - HTML5, YouTube and Vimeo media player -->
+    <script src="/assets/js/plyr.min.js"></script>
+    <!-- Swiper - Touch Slider -->
+    <script src="/assets/js/swiper.min.js"></script>
+    <!-- Waypoints -->
+    <script src="/assets/js/jquery.waypoints.min.js"></script>
+    <!-- Counterup -->
+    <script src="/assets/js/counterup.min.js"></script>
+    <!-- Findeas -->
+    <script src="/assets/js/findeas.js"></script>
+    
+    <script type="module">
+      const MAX_BOOT_RETRIES = 3;
+      const BOOT_RETRY_DELAY_MS = 500;
+
+      const bootApp = async (attempt = 0) => {
+        try {
+          await import('/src/main.tsx');
+        } catch (error) {
+          console.error('[BOOT] Falha ao carregar app', error);
+          if (attempt < MAX_BOOT_RETRIES) {
+            setTimeout(() => bootApp(attempt + 1), BOOT_RETRY_DELAY_MS);
+            return;
+          }
+          const root = document.getElementById('root');
+          if (root) {
+            root.innerHTML = `
+              <div style="display:flex;min-height:100vh;align-items:center;justify-content:center;background:#0f172a;color:#fff;font-family:system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, sans-serif;">
+                <div style="max-width:520px;text-align:center;padding:24px;">
+                  <h1 style="font-size:24px;margin:0 0 12px;">Nao foi possivel carregar a aplicacao</h1>
+                  <p style="opacity:0.85;margin:0 0 20px;">Clique para tentar novamente.</p>
+                  <button id="boot-retry" style="background:#22c55e;color:#0f172a;border:none;border-radius:10px;padding:12px 20px;font-weight:700;cursor:pointer;">Recarregar</button>
+                </div>
+              </div>
+            `;
+            const retryButton = document.getElementById('boot-retry');
+            retryButton?.addEventListener('click', () => window.location.reload());
+          }
+        }
+      };
+
+      bootApp();
+    </script>
+  </body>
+</html>

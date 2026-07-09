@@ -1,0 +1,21 @@
+<svg width="1200" height="675" viewBox="0 0 1200 675" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="1200" height="675" rx="40" fill="#0F172A"/>
+  <rect x="36" y="36" width="1128" height="603" rx="30" fill="url(#bg)"/>
+  <circle cx="971" cy="161" r="126" fill="#14B8A6" fill-opacity="0.18"/>
+  <circle cx="1038" cy="526" r="160" fill="#22C55E" fill-opacity="0.14"/>
+  <rect x="86" y="104" width="168" height="42" rx="21" fill="#CCFBF1"/>
+  <text x="110" y="132" fill="#0F766E" font-family="Arial, sans-serif" font-size="20" font-weight="700">BLOG AGENTEZAP</text>
+  <text x="86" y="230" fill="white" font-family="Arial, sans-serif" font-size="64" font-weight="700">Automação, IA e</text>
+  <text x="86" y="308" fill="white" font-family="Arial, sans-serif" font-size="64" font-weight="700">WhatsApp com contexto</text>
+  <text x="86" y="390" fill="#CFFAFE" font-family="Arial, sans-serif" font-size="28">Conteúdo oficial do AgenteZap para operação, vendas e atendimento.</text>
+  <rect x="86" y="462" width="362" height="72" rx="24" fill="#14B8A6"/>
+  <text x="122" y="507" fill="white" font-family="Arial, sans-serif" font-size="30" font-weight="700">agentezap.online/blog</text>
+  <text x="86" y="590" fill="#99F6E4" font-family="Arial, sans-serif" font-size="24">Fallback estático para Vercel e compartilhamento social.</text>
+  <defs>
+    <linearGradient id="bg" x1="92" y1="82" x2="1105" y2="626" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0F766E"/>
+      <stop offset="0.52" stop-color="#115E59"/>
+      <stop offset="1" stop-color="#111827"/>
+    </linearGradient>
+  </defs>
+</svg>

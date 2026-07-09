@@ -1,0 +1,188 @@
+import { useMemo, useState } from "react";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { useToast } from "@/hooks/use-toast";
+import { ToastAction } from "@/components/ui/toast";
+import { useLocation } from "wouter";
+import { Plug } from "lucide-react";
+
+type Integration = {
+  name: string;
+  desc: string;
+  category: "ERP" | "E-commerce" | "Marketplace" | "Mensageria" | "Automação" | "Pagamentos" | "Analytics" | "Marketing" | "Outros";
+  region: "BR" | "Global";
+  status: "disponivel" | "em-breve";
+};
+
+const INTEGRATIONS: Integration[] = [
+  { name: "SAP S/4HANA", desc: "APIs OData/REST para pedidos e cadastros", category: "ERP", region: "Global", status: "em-breve" },
+  { name: "Oracle NetSuite", desc: "SuiteTalk REST/SOAP para ERP em nuvem", category: "ERP", region: "Global", status: "em-breve" },
+  { name: "Microsoft Dynamics 365", desc: "Dataverse/REST para vendas e finanças", category: "ERP", region: "Global", status: "em-breve" },
+  { name: "Odoo", desc: "JSON-RPC/XML-RPC para módulos ERP/CRM", category: "ERP", region: "Global", status: "em-breve" },
+  { name: "TOTVS Protheus", desc: "APIs REST/Bridge – mercado brasileiro", category: "ERP", region: "BR", status: "em-breve" },
+  { name: "Sankhya", desc: "APIs REST para cadastros e vendas", category: "ERP", region: "BR", status: "em-breve" },
+  { name: "Senior Sistemas", desc: "Integrações ERP/HR – REST/GraphQL", category: "ERP", region: "BR", status: "em-breve" },
+  { name: "Omie", desc: "APIs REST – financeiro, vendas, NFe", category: "ERP", region: "BR", status: "disponivel" },
+  { name: "Bling", desc: "API REST – pedidos, notas e contatos", category: "ERP", region: "BR", status: "disponivel" },
+  { name: "Tiny ERP", desc: "API REST – e-commerce e fiscal", category: "ERP", region: "BR", status: "disponivel" },
+  { name: "Conta Azul", desc: "API REST – vendas/financeiro", category: "ERP", region: "BR", status: "em-breve" },
+
+  { name: "Shopify", desc: "REST/GraphQL para catálogo e pedidos", category: "E-commerce", region: "Global", status: "disponivel" },
+  { name: "WooCommerce", desc: "REST com autenticação por keys", category: "E-commerce", region: "Global", status: "disponivel" },
+  { name: "Magento / Adobe Commerce", desc: "REST/GraphQL para lojas avançadas", category: "E-commerce", region: "Global", status: "em-breve" },
+  { name: "PrestaShop", desc: "Webservice API para catálogo/pedidos", category: "E-commerce", region: "Global", status: "em-breve" },
+  { name: "VTEX", desc: "APIs OMS/Catalog – enterprise brasileiro", category: "E-commerce", region: "BR", status: "em-breve" },
+  { name: "Nuvemshop", desc: "API pública – América Latina", category: "E-commerce", region: "BR", status: "em-breve" },
+  { name: "Tray", desc: "API Tray – e-commerce nacional", category: "E-commerce", region: "BR", status: "em-breve" },
+  { name: "Loja Integrada", desc: "API REST – plataforma brasileira", category: "E-commerce", region: "BR", status: "em-breve" },
+
+  { name: "Mercado Livre", desc: "API oficial (MLB) para anúncios e pedidos", category: "Marketplace", region: "BR", status: "disponivel" },
+  { name: "Amazon Marketplace", desc: "SP-API para pedidos e catálogo", category: "Marketplace", region: "BR", status: "em-breve" },
+  { name: "Americanas (B2W)", desc: "Integração marketplace B2W/americanas", category: "Marketplace", region: "BR", status: "em-breve" },
+  { name: "Magalu Marketplace", desc: "API Magalu para sellers", category: "Marketplace", region: "BR", status: "em-breve" },
+  { name: "Via (Casas Bahia/Ponto)", desc: "Integração Via Marketplace", category: "Marketplace", region: "BR", status: "em-breve" },
+  { name: "Shopee", desc: "OpenAPI para sellers no Brasil", category: "Marketplace", region: "BR", status: "disponivel" },
+
+  { name: "WhatsApp Cloud API", desc: "Canal oficial Meta para mensagens", category: "Mensageria", region: "Global", status: "disponivel" },
+  { name: "Instagram DM", desc: "Mensagens diretas via Graph API", category: "Mensageria", region: "Global", status: "em-breve" },
+  { name: "Facebook Messenger", desc: "Atendimento omnichannel", category: "Mensageria", region: "Global", status: "em-breve" },
+  { name: "Telegram", desc: "Bots para suporte e notificações", category: "Mensageria", region: "Global", status: "em-breve" },
+  { name: "Gmail/Outlook", desc: "Integração de e-mail (IMAP/Graph)", category: "Mensageria", region: "Global", status: "em-breve" },
+
+  { name: "Zapier", desc: "Automatize fluxos com milhares de apps", category: "Automação", region: "Global", status: "disponivel" },
+  { name: "Make (Integromat)", desc: "Cenários low-code", category: "Automação", region: "Global", status: "em-breve" },
+  { name: "n8n", desc: "Automação open-source", category: "Automação", region: "Global", status: "em-breve" },
+  { name: "Pipedream", desc: "Workflows por eventos", category: "Automação", region: "Global", status: "em-breve" },
+
+  { name: "Mercado Pago", desc: "Pagamentos e PIX", category: "Pagamentos", region: "BR", status: "em-breve" },
+  { name: "PagSeguro", desc: "Checkout, assinaturas e PIX", category: "Pagamentos", region: "BR", status: "em-breve" },
+  { name: "Pagar.me", desc: "Gateway/PSP brasileiro", category: "Pagamentos", region: "BR", status: "em-breve" },
+  { name: "Iugu", desc: "Faturamento e recorrência", category: "Pagamentos", region: "BR", status: "em-breve" },
+  { name: "Asaas", desc: "Cobrança, boletos e PIX", category: "Pagamentos", region: "BR", status: "em-breve" },
+  { name: "Stripe", desc: "Pagamentos globais", category: "Pagamentos", region: "Global", status: "em-breve" },
+  { name: "PayPal", desc: "Pagamentos globais", category: "Pagamentos", region: "Global", status: "em-breve" },
+
+  { name: "Google Sheets", desc: "Atualize planilhas com dados", category: "Analytics", region: "Global", status: "disponivel" },
+  { name: "Looker Studio", desc: "Dashboards e relatórios", category: "Analytics", region: "Global", status: "em-breve" },
+  { name: "Power BI", desc: "Conectores para BI corporativo", category: "Analytics", region: "Global", status: "em-breve" },
+
+  { name: "RD Station", desc: "Automação de Marketing (BR)", category: "Marketing", region: "BR", status: "em-breve" },
+  { name: "Mailchimp", desc: "E-mail marketing", category: "Marketing", region: "Global", status: "em-breve" },
+  { name: "Meta Ads", desc: "Integração com anúncios", category: "Marketing", region: "Global", status: "em-breve" },
+  { name: "Google Ads", desc: "Conversões e leads", category: "Marketing", region: "Global", status: "em-breve" },
+];
+
+export default function IntegrationsPage() {
+  const { toast } = useToast();
+  const [, setLocation] = useLocation();
+  const [search, setSearch] = useState("");
+  const [category, setCategory] = useState<Integration["category"] | "Todos">("Todos");
+  const [region, setRegion] = useState<"Todos" | "BR" | "Global">("Todos");
+  const [status, setStatus] = useState<"Todos" | "disponivel" | "em-breve">("Todos");
+
+  const requireSubscription = () =>
+    toast({
+      title: "Recurso Premium",
+      description:
+        "Esta funcionalidade requer assinatura de um plano. Por favor, assine um plano para ter acesso.",
+      action: (
+        <ToastAction altText="Ver Planos" onClick={() => setLocation("/plans")}>Ver Planos</ToastAction>
+      ),
+    });
+
+  const categories: (Integration["category"] | "Todos")[] = [
+    "Todos",
+    "ERP",
+    "E-commerce",
+    "Marketplace",
+    "Mensageria",
+    "Automação",
+    "Pagamentos",
+    "Analytics",
+    "Marketing",
+  ];
+
+  const filtered = useMemo(() => {
+    return INTEGRATIONS.filter((i) =>
+      (category === "Todos" || i.category === category) &&
+      (region === "Todos" || i.region === region) &&
+      (status === "Todos" || i.status === status) &&
+      (i.name.toLowerCase().includes(search.toLowerCase()) || i.desc.toLowerCase().includes(search.toLowerCase()))
+    );
+  }, [search, category, region, status]);
+
+  const counters = useMemo(() => {
+    const total = INTEGRATIONS.length;
+    const disponiveis = INTEGRATIONS.filter((i) => i.status === "disponivel").length;
+    const breve = INTEGRATIONS.filter((i) => i.status === "em-breve").length;
+    return { total, disponiveis, breve };
+  }, []);
+
+  return (
+    <div className="flex-1 overflow-auto p-6">
+      <div className="max-w-6xl mx-auto space-y-6">
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-3xl font-bold">Integrações</h1>
+            <p className="text-muted-foreground">
+              Conecte ERPs, e-commerces, marketplaces e apps de automação. IA centraliza e prioriza atendimentos.
+            </p>
+          </div>
+        </div>
+
+        <Card>
+          <CardHeader className="space-y-4">
+            <div className="grid gap-3 md:grid-cols-4">
+              <div className="md:col-span-2">
+                <Input value={search} onChange={(e)=>setSearch(e.target.value)} placeholder="Buscar integrações" />
+              </div>
+              <select value={category} onChange={(e)=>setCategory(e.target.value as any)} className="border rounded-md px-3 py-2 text-sm">
+                {categories.map((c)=> (<option key={c} value={c}>{c}</option>))}
+              </select>
+              <div className="flex gap-2">
+                <select value={region} onChange={(e)=>setRegion(e.target.value as any)} className="border rounded-md px-3 py-2 text-sm">
+                  <option value="Todos">Todas as regiões</option>
+                  <option value="BR">Brasil</option>
+                  <option value="Global">Global</option>
+                </select>
+                <select value={status} onChange={(e)=>setStatus(e.target.value as any)} className="border rounded-md px-3 py-2 text-sm">
+                  <option value="Todos">Todos status</option>
+                  <option value="disponivel">Disponível</option>
+                  <option value="em-breve">Em breve</option>
+                </select>
+              </div>
+            </div>
+            <div className="grid gap-4 md:grid-cols-3">
+              <Card className="bg-muted"><CardHeader className="pb-2"><CardDescription>Integrações mapeadas</CardDescription><CardTitle className="text-3xl">{counters.total}</CardTitle></CardHeader></Card>
+              <Card className="bg-muted"><CardHeader className="pb-2"><CardDescription>Disponíveis</CardDescription><CardTitle className="text-3xl">{counters.disponiveis}</CardTitle></CardHeader></Card>
+              <Card className="bg-muted"><CardHeader className="pb-2"><CardDescription>Em breve</CardDescription><CardTitle className="text-3xl">{counters.breve}</CardTitle></CardHeader></Card>
+            </div>
+          </CardHeader>
+        </Card>
+
+        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+          {filtered.map((i) => (
+            <Card key={i.name}>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2"><Plug className="w-4 h-4" /> {i.name}</CardTitle>
+                <CardDescription>{i.desc}</CardDescription>
+              </CardHeader>
+              <CardContent className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Badge variant="secondary">{i.category}</Badge>
+                  <Badge variant="outline">{i.region}</Badge>
+                  <Badge className={i.status === "disponivel" ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-800"}>{i.status === "disponivel" ? "Disponível" : "Em breve"}</Badge>
+                </div>
+                <Button onClick={requireSubscription} disabled={i.status!=="disponivel"}>{i.status === "disponivel" ? "Conectar" : "Detalhes"}</Button>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+

@@ -1,0 +1,52 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
+const sourceRoot = resolve(process.cwd(), "api/http.ts");
+const source = readFileSync(sourceRoot, "utf8");
+
+assert.match(source, /clientEmail\?: string \| null;/);
+assert.match(source, /location\?: string \| null;/);
+assert.match(source, /serviceValue\?: string \| null;/);
+assert.match(source, /paymentMethod\?: string \| null;/);
+assert.match(source, /function extractAgendamento3LocationFromHistory/);
+assert.match(source, /function buildAgendamento3AppointmentNotes/);
+assert.match(source, /Se o historico trouxer endereco, e-mail, valor do servico ou forma de pagamento/);
+assert.match(source, /Forma de pagamento: \$\{input\.paymentMethod\}/);
+assert.match(source, /Valor: \$\{input\.serviceValue\}/);
+assert.match(source, /client_email, service_name/);
+assert.match(source, /location, location_type, created_by_ai/);
+assert.match(source, /clientEmail: row\.client_email/);
+assert.match(source, /attendees: \[\{ email: clientEmail \}\]/);
+assert.match(source, /sendUpdates: "all" as const/);
+assert.match(source, /function shouldTreatAgendamento3RescheduleAsNewBooking/);
+assert.match(source, /function hasAgendamento3FreshBookingIntakeContext/);
+assert.match(source, /agendamento3_reschedule_guard/);
+assert.match(source, /Use intent=reschedule somente quando o cliente pedir claramente/);
+assert.match(source, /const JB_ELETRICA_USER_ID = "d4a1d307-3d78-4bfe-8ab7-c4a0c3ccbb1c"/);
+assert.match(source, /function shouldUpgradeAgendamento3PaymentContinuationToBook/);
+assert.match(source, /agendamento3_payment_confirmation_guard/);
+assert.match(source, /function shouldTreatAgendamento3StrictUnknownAsBook/);
+assert.match(source, /agendamento3_strict_unknown_intent_guard/);
+assert.match(source, /function hasAgendamento3EmailUnavailableContext/);
+assert.match(source, /function buildAgendamento3StrictIntakeBlock/);
+assert.match(source, /agendamento3_strict_intake_guard/);
+assert.match(source, /function isAgendamento3JbFreeVisitRequest/);
+assert.match(source, /function inferAgendamento3TenantPaymentMethod/);
+assert.match(source, /Sem cobranca na visita/);
+assert.match(source, /agendamento3_tenant_payment_policy/);
+assert.match(source, /function formatAgendamento3SlotOfferResponse/);
+assert.match(source, /horário não fica reservado até você confirmar/);
+assert.match(source, /AGENDAMENTO3_SLOT_TAKEN/);
+assert.match(source, /pg_advisory_xact_lock\(hashtext\(\$1\), hashtext\(\$2\)\)/);
+assert.match(source, /appointments_insert_overlap_guard/);
+assert.match(source, /parseAgendamento3TimeFromText\(contextText\)/);
+assert.match(source, /withoutScheduleDigits/);
+assert.match(source, /So falta a forma de pagamento para eu confirmar/);
+assert.match(source, /Para enviar a confirmacao por e-mail/);
+
+const extractorSource = readFileSync(resolve(process.cwd(), "server/agendamento3ExtractorService.ts"), "utf8");
+assert.match(extractorSource, /Use action=reschedule somente quando o cliente pedir claramente/);
+assert.match(extractorSource, /Criar novo agendamento confirmado nesta conversa/);
+
+console.log("agendamento3CalendarDetailsPolicy.test.ts ok");

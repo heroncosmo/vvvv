@@ -1,0 +1,97 @@
+FROM node:20-bookworm-slim AS deps
+
+WORKDIR /app
+
+COPY 2.0/agentezap-vercel/source/package*.json ./
+RUN npm ci --no-audit --no-fund
+
+FROM node:20-bookworm-slim AS build
+
+WORKDIR /app
+
+ARG SUPABASE_URL=""
+ARG SUPABASE_ANON_KEY=""
+ARG VITE_SUPABASE_URL=""
+ARG VITE_SUPABASE_ANON_KEY=""
+ARG PUBLIC_BASE_URL=""
+ARG APP_URL=""
+ARG VITE_PUBLIC_APP_URL=""
+ARG PWA_VERSION=""
+ARG VITE_PWA_VERSION=""
+
+ENV NODE_ENV=production
+ENV SUPABASE_URL=${SUPABASE_URL}
+ENV SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
+ENV VITE_SUPABASE_URL=${VITE_SUPABASE_URL}
+ENV VITE_SUPABASE_ANON_KEY=${VITE_SUPABASE_ANON_KEY}
+ENV PUBLIC_BASE_URL=${PUBLIC_BASE_URL}
+ENV APP_URL=${APP_URL}
+ENV VITE_PUBLIC_APP_URL=${VITE_PUBLIC_APP_URL}
+ENV PWA_VERSION=${PWA_VERSION}
+ENV VITE_PWA_VERSION=${VITE_PWA_VERSION}
+
+COPY --from=deps /app/node_modules ./node_modules
+COPY 2.0/agentezap-vercel/source/ ./
+RUN mkdir -p public
+RUN npm run build
+RUN npm prune --omit=dev --no-audit --no-fund
+
+FROM node:20-bookworm-slim AS whisper
+
+ARG WHISPER_CPP_REF="v1.9.1"
+ARG LOCAL_WHISPER_MODEL="base"
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates git cmake build-essential curl \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN git clone --depth 1 --branch "${WHISPER_CPP_REF}" https://github.com/ggml-org/whisper.cpp /tmp/whisper.cpp \
+    && cmake -S /tmp/whisper.cpp -B /tmp/whisper.cpp/build -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=OFF \
+    && cmake --build /tmp/whisper.cpp/build --config Release -j2 --target whisper-cli \
+    && mkdir -p /opt/agentezap/whisper \
+    && cp /tmp/whisper.cpp/build/bin/whisper-cli /opt/agentezap/whisper/whisper-cli \
+    && cp /tmp/whisper.cpp/build/bin/*.so* /opt/agentezap/whisper/ \
+    && curl -fsSL -o "/opt/agentezap/whisper/ggml-${LOCAL_WHISPER_MODEL}.bin" "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-${LOCAL_WHISPER_MODEL}.bin" \
+    && chmod +x /opt/agentezap/whisper/whisper-cli
+
+FROM node:20-bookworm-slim AS runtime
+
+WORKDIR /app
+
+ENV NODE_ENV=production
+ENV LOCAL_WHISPER_TRANSCRIPTION_ENABLED=true
+ENV LOCAL_WHISPER_MODEL=base
+ENV LOCAL_WHISPER_LANGUAGE=pt
+ENV LOCAL_WHISPER_TIMEOUT_MS=180000
+ENV LOCAL_WHISPER_MAX_ATTEMPTS=3
+ENV LOCAL_WHISPER_QUEUE_WAIT_MS=60000
+ENV LOCAL_WHISPER_RETRY_DELAY_MS=1500
+ENV AUDIO_TRANSCRIPTION_PRIMARY_PROVIDER=deepinfra
+ENV AUDIO_TRANSCRIPTION_DEEPINFRA_TIMEOUT_MS=30000
+ENV AUDIO_TRANSCRIPTION_NORMALIZE_ENABLED=true
+ENV AUDIO_TRANSCRIPTION_NORMALIZE_MAX_BYTES=26214400
+ENV AUDIO_TRANSCRIPTION_NORMALIZE_TIMEOUT_MS=30000
+ENV AUDIO_TRANSCRIPTION_REMOTE_FALLBACK_ENABLED=false
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg ca-certificates libgomp1 poppler-utils \
+    && npm install -g opencode-ai@1.17.8 @openai/codex@0.142.5 --no-audit --no-fund \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=whisper /opt/agentezap/whisper /opt/agentezap/whisper
+RUN cp /opt/agentezap/whisper/*.so* /usr/local/lib/ \
+    && ldconfig \
+    && /opt/agentezap/whisper/whisper-cli --help >/dev/null
+
+COPY --from=build /app/package*.json ./
+COPY --from=build /app/node_modules ./node_modules
+COPY --from=build /app/dist ./dist
+COPY --from=build /app/client ./client
+COPY --from=build /app/shared ./shared
+COPY --from=build /app/public ./public
+
+RUN mkdir -p uploads attached_assets temp_audio logs
+
+EXPOSE 5000
+
+CMD ["node", "dist/index.js"]
