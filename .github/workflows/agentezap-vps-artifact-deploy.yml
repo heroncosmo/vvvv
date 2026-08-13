@@ -27,7 +27,11 @@ jobs:
           mkdir -p ~/.ssh
           printf '%s\n' "${{ secrets.AGENTEZAP_VPS_SSH_PRIVATE_KEY }}" > ~/.ssh/agentezap_vps_key
           chmod 600 ~/.ssh/agentezap_vps_key
-          ssh-keyscan -H "${{ secrets.AGENTEZAP_VPS_HOST }}" >> ~/.ssh/known_hosts
+          printf '%s %s\n' \
+            "${{ secrets.AGENTEZAP_VPS_HOST }}" \
+            'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPiIsgcInPTW3gXfKk1NFcjSWotBePRGgsovdHW5GJ5s' \
+            > ~/.ssh/known_hosts
+          ssh-keygen -F "${{ secrets.AGENTEZAP_VPS_HOST }}" -f ~/.ssh/known_hosts >/dev/null
 
       - name: Upload artifact
         run: |
